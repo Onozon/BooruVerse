@@ -1,0 +1,116 @@
+# =============================================================================
+# Konepa — корневой .gitignore (Python GUI + Qt/C++ подпроект)
+# =============================================================================
+
+# --- macOS ---
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# --- Windows ---
+Thumbs.db
+Desktop.ini
+ehthumbs.db
+
+# --- Python ---
+.venv/
+venv/
+env/
+ENV/
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg
+*.egg-info/
+.eggs/
+dist/
+pip-wheel-metadata/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+.nox/
+htmlcov/
+.coverage
+.coverage.*
+coverage.xml
+*.cover
+
+# --- Selenium / WebDriver ---
+.wdm/
+geckodriver.log
+chromedriver.log
+
+# --- Секреты и локальные настройки ---
+session_cookie.txt
+.env
+.env.*
+*.local.json
+
+# --- Runtime-данные приложения (только корень репозитория) ---
+/cache/
+/downloads/
+/temp_analysis/
+download_state.json
+url_history.json
+file_types_settings.json
+
+# --- Логи ---
+*.log
+
+# --- Отладочные HTML-фикстуры и дампы ---
+/html_samples/
+/debug/
+/*.html
+/api_response.json
+/deep_analysis_result.json
+/artists_page_analysis.json
+/artists_page_analysis_selenium.json
+
+# --- Qt / C++ (подпроект Konepa/Konepa) ---
+Konepa/Konepa/cache/
+Konepa/Konepa/session_cookie.txt
+Konepa/Konepa/build/
+Konepa/Konepa/.qtcreator/
+Konepa/Konepa/CMakeLists.txt.user*
+Konepa/Konepa/CMakeCache.txt
+Konepa/Konepa/CMakeFiles/
+Konepa/Konepa/.ninja_log
+Konepa/Konepa/.ninja_deps
+Konepa/Konepa/compile_commands.json
+Konepa/Konepa/*_autogen/
+Konepa/Konepa/Testing/
+
+# Qt/C++ артефакты сборки
+*.moc
+moc_*.cpp
+ui_*.h
+qrc_*.cpp
+*.qm
+*.a
+*.o
+*.obj
+*.pdb
+*.ilk
+*.idb
+*.app
+*.dll
+*.exe
+*.Debug
+*.Release
+Makefile
+*.prl
+*.autosave
+
+# --- IDE / редакторы ---
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.*.swp
+*.pro.user*
+*.qbs.user*
