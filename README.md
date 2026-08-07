@@ -1,47 +1,32 @@
 # BooruVerse
 
-SwiftUI client for browsing one or more [Booru](https://en.wikipedia.org/wiki/Booru)-style image boards at once (Moebooru, Danbooru 2.x, Gelbooru).
+A native Apple app for browsing image boards — several at once, in one feed.
 
-## Features
+BooruVerse talks to Moebooru, Danbooru 2.x, and Gelbooru APIs. Flip on the hosts you care about, search with tags, and flip through posts without hopping between sites.
 
-- Multi-server feed — enable any mix of built-in or custom hosts
-- Browse by tags, favorites, pools, and popular feed
-- Gallery with zoom, full-quality fetch, and tiling modes
-- Global content rating filter (server-side where supported, client fallback)
-- Per-server border colors and optional API credentials (Gelbooru / Danbooru)
+Built with SwiftUI for iPhone, iPad, and Mac.
 
-## Built-in servers
+## What you get
 
-Toggle in Settings:
+**One feed, many servers.** Enable Safebooru, yande.re, Konachan, Danbooru, Gelbooru, or any custom host that speaks a supported API. Results merge into a single stream; each server keeps its own border color so you can tell them apart.
 
-- `safebooru.org`
-- `yande.re`
-- `konachan.com`
-- `danbooru.donmai.us`
-- `gelbooru.com`
+**Search that stays out of the way.** Tag chips, suggestions, saved tag sets, and a rating filter that applies everywhere — Browse, Feed, Pools, Favorites.
 
-## Open in Xcode
+**A gallery meant for looking.** Pinch-zoom, full-size fetch, peek overlays, and two tiling modes (column stacks or adaptive rows).
+
+**Pools & favorites.** Browse pools on servers that expose them, and keep a local favorites list across hosts.
+
+**Add your own boards.** Paste a host; BooruVerse probes it and picks the API flavor automatically. Optional credentials for Gelbooru / Danbooru when you need them.
+
+## Requirements
+
+- Xcode 16+
+- A recent iOS / iPadOS / macOS SDK
 
 ```bash
 open BooruVerse.xcodeproj
 ```
 
-Requires Xcode 16+ and a recent Apple SDK (folder-synced project). Targets iOS / iPadOS / macOS.
+## Notes
 
-## Layout
-
-| Path | Role |
-|------|------|
-| `BooruVerse/` | App sources (API clients, features, models) |
-| `BooruVerse.xcodeproj/` | Xcode project |
-| `BooruVerseTests/` | Unit tests |
-| `BooruVerseUITests/` | UI tests |
-| `docs/` | Reference material (e.g. Pybooru API epub) |
-
-## Docs
-
-- [`docs/pybooru-readthedocs-io-en-stable.epub`](docs/pybooru-readthedocs-io-en-stable.epub) — Pybooru API reference used while building the clients
-
-## License / usage
-
-Personal / research tooling for public APIs. Respect each site’s terms of service and local law. Keep API keys and session cookies out of the repository.
+Personal project for public board APIs. Follow each site’s terms and the law where you are. Don’t commit API keys or cookies.
