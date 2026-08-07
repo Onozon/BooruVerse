@@ -1,5 +1,5 @@
 # =============================================================================
-# Konepa monorepo
+# BooruVerse
 # =============================================================================
 
 # --- macOS / Windows ---
@@ -11,93 +11,13 @@ Thumbs.db
 Desktop.ini
 ehthumbs.db
 
-# --- Python ---
-.venv/
-venv/
-env/
-ENV/
-__pycache__/
-*.py[cod]
-*$py.class
-*.so
-.Python
-*.egg
-*.egg-info/
-.eggs/
-dist/
-pip-wheel-metadata/
-.pytest_cache/
-.mypy_cache/
-.ruff_cache/
-.tox/
-.nox/
-htmlcov/
-.coverage
-.coverage.*
-coverage.xml
-*.cover
-
-# --- Selenium / WebDriver ---
-.wdm/
-geckodriver.log
-chromedriver.log
-
 # --- Secrets & local runtime state ---
-session_cookie.txt
 .env
 .env.*
 *.local.json
-url_history.json
-download_state.json
-file_types_settings.json
-
-# --- Runtime data (repo root) ---
-/cache/
-/downloads/
-/temp_analysis/
-/html_samples/
-/debug/
-/*.html
-/api_response.json
-/deep_analysis_result.json
-/artists_page_analysis.json
-/artists_page_analysis_selenium.json
 
 # --- Logs ---
 *.log
-
-# --- Qt / C++ (Konepa/Konepa) ---
-Konepa/Konepa/cache/
-Konepa/Konepa/session_cookie.txt
-Konepa/Konepa/build/
-Konepa/Konepa/.qtcreator/
-Konepa/Konepa/CMakeLists.txt.user*
-Konepa/Konepa/CMakeCache.txt
-Konepa/Konepa/CMakeFiles/
-Konepa/Konepa/.ninja_log
-Konepa/Konepa/.ninja_deps
-Konepa/Konepa/compile_commands.json
-Konepa/Konepa/*_autogen/
-Konepa/Konepa/Testing/
-*.moc
-moc_*.cpp
-ui_*.h
-qrc_*.cpp
-*.qm
-*.a
-*.o
-*.obj
-*.pdb
-*.ilk
-*.idb
-*.app
-*.dll
-*.exe
-*.Debug
-*.Release
-Makefile
-*.prl
-*.autosave
 
 # --- Xcode / Swift ---
 DerivedData/
@@ -120,5 +40,9 @@ playground.xcworkspace
 *.swo
 *~
 .*.swp
-*.pro.user*
-*.qbs.user*
+
+# --- Python leftovers (local tooling only) ---
+.venv/
+venv/
+__pycache__/
+*.py[cod]
