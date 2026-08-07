@@ -6,6 +6,19 @@ BooruVerse talks to Moebooru, Danbooru 2.x, and Gelbooru APIs. Flip on the hosts
 
 Built with SwiftUI for iPhone, iPad, and Mac.
 
+## Download
+
+macOS builds are on the [Releases](https://github.com/Onozon/BooruVerse/releases) page (`BooruVerse-*-macOS.zip`).
+
+1. Unzip and move `BooruVerse.app` somewhere convenient (e.g. Applications).
+2. First launch will likely be blocked by Gatekeeper (the build is not notarized). Right-click the app → **Open**, or clear the quarantine flag:
+
+```bash
+xattr -cr /path/to/BooruVerse.app
+```
+
+Current release is **Apple Silicon (arm64)** and needs **macOS 14.6+**.
+
 ## What you get
 
 **One feed, many servers.** Enable Safebooru, yande.re, Konachan, Danbooru, Gelbooru, or any custom host that speaks a supported API. Results merge into a single stream; each server keeps its own border color so you can tell them apart.

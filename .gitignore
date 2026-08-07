@@ -21,6 +21,8 @@ ehthumbs.db
 
 # --- Xcode / Swift ---
 DerivedData/
+build/
+dist/
 *.xcuserstate
 **/xcuserdata/
 *.xccheckout
