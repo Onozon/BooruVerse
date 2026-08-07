@@ -561,6 +561,7 @@ final class BrowseViewModel {
     func saveCurrentTagSet(named name: String) {
         guard !tagQuery.tags.isEmpty else { return }
         SavedTagSetStore.shared.save(name: name, tags: tagQuery.tags)
+        AppDebug.log("SavedTagSets", "save requested name=\(name) tags=\(tagQuery.tags.count)")
     }
 
     func applySavedTagSet(_ set: SavedTagSet) async {

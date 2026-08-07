@@ -3,20 +3,42 @@ import SwiftUI
 struct SettingsPlaceholderView: View {
     @Environment(AppSettingsStore.self) private var settings
     @Environment(ServerStore.self) private var servers
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
 
     @State private var showAddServer = false
 
     var body: some View {
         NavigationStack {
-            Form {
-                serversSection
-                ratingSection
-                gallerySection
-            }
-            .navigationTitle("Settings")
-            .sheet(isPresented: $showAddServer) {
-                AddServerView()
-            }
+            settingsForm
+                .navigationTitle("Settings")
+#if os(macOS)
+                .formStyle(.grouped)
+#endif
+                .frame(maxWidth: settingsContentWidth)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                .sheet(isPresented: $showAddServer) {
+                    AddServerView()
+#if os(macOS)
+                        .frame(minWidth: 440, idealWidth: 480, minHeight: 220, idealHeight: 260)
+#endif
+                }
+        }
+    }
+
+    private var settingsContentWidth: CGFloat? {
+#if os(macOS)
+        horizontalSizeClass == .compact ? nil : 720
+#else
+        nil
+#endif
+    }
+
+    @ViewBuilder
+    private var settingsForm: some View {
+        Form {
+            serversSection
+            ratingSection
+            gallerySection
         }
     }
 
@@ -25,7 +47,6 @@ struct SettingsPlaceholderView: View {
             ForEach(servers.servers) { server in
                 ServerRow(server: server)
             }
-            .onDelete(perform: deleteServers)
 
             Button {
                 showAddServer = true
@@ -41,6 +62,20 @@ struct SettingsPlaceholderView: View {
 
     private var ratingSection: some View {
         Section {
+#if os(macOS)
+            Picker("Content Rating", selection: ratingBinding) {
+                ForEach(RatingFilter.allCases) { filter in
+                    Text(filter.title).tag(filter)
+                }
+            }
+            .pickerStyle(.radioGroup)
+            .labelsHidden()
+
+            Text(settings.ratingFilter.description)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+#else
             ForEach(RatingFilter.allCases) { filter in
                 Button {
                     settings.ratingFilter = filter
@@ -64,6 +99,7 @@ struct SettingsPlaceholderView: View {
                 }
                 .buttonStyle(.plain)
             }
+#endif
         } header: {
             Text("Content Rating")
         } footer: {
@@ -73,6 +109,20 @@ struct SettingsPlaceholderView: View {
 
     private var gallerySection: some View {
         Section {
+#if os(macOS)
+            Picker("Gallery Layout", selection: tilingBinding) {
+                ForEach(GalleryTilingMode.allCases) { mode in
+                    Text(mode.title).tag(mode)
+                }
+            }
+            .pickerStyle(.radioGroup)
+            .labelsHidden()
+
+            Text(settings.galleryTilingMode.description)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+#else
             ForEach(GalleryTilingMode.allCases) { mode in
                 Button {
                     settings.galleryTilingMode = mode
@@ -96,6 +146,7 @@ struct SettingsPlaceholderView: View {
                 }
                 .buttonStyle(.plain)
             }
+#endif
         } header: {
             Text("Gallery")
         } footer: {
@@ -103,11 +154,18 @@ struct SettingsPlaceholderView: View {
         }
     }
 
-    private func deleteServers(at offsets: IndexSet) {
-        for index in offsets {
-            let server = servers.servers[index]
-            servers.remove(host: server.host)
-        }
+    private var ratingBinding: Binding<RatingFilter> {
+        Binding(
+            get: { settings.ratingFilter },
+            set: { settings.ratingFilter = $0 }
+        )
+    }
+
+    private var tilingBinding: Binding<GalleryTilingMode> {
+        Binding(
+            get: { settings.galleryTilingMode },
+            set: { settings.galleryTilingMode = $0 }
+        )
     }
 }
 
@@ -116,6 +174,63 @@ private struct ServerRow: View {
     let server: BooruServer
 
     var body: some View {
+#if os(macOS)
+        macRow
+#else
+        iosRow
+#endif
+    }
+
+#if os(macOS)
+    private var macRow: some View {
+        HStack(alignment: .center, spacing: 12) {
+            Toggle("Enabled", isOn: enabledBinding)
+                .labelsHidden()
+                .toggleStyle(.checkbox)
+
+            NavigationLink {
+                ServerDetailView(server: server)
+            } label: {
+                HStack(spacing: 10) {
+                    Circle()
+                        .fill(servers.color(for: server.host))
+                        .frame(width: 12, height: 12)
+                        .opacity(server.isEnabled ? 1 : 0.35)
+
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(server.host)
+                            .foregroundStyle(.primary)
+                        HStack(spacing: 6) {
+                            Text(server.flavor.title)
+                            if server.isBuiltIn {
+                                Text("Built-in")
+                            }
+                        }
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    }
+
+                    Spacer(minLength: 8)
+
+                    keyIndicator
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.vertical, 2)
+        .contextMenu {
+            if !server.isBuiltIn {
+                Button("Remove Server", role: .destructive) {
+                    servers.remove(host: server.host)
+                }
+            }
+        }
+    }
+#endif
+
+#if os(iOS)
+    private var iosRow: some View {
         HStack(spacing: 10) {
             NavigationLink {
                 ServerDetailView(server: server)
@@ -148,7 +263,15 @@ private struct ServerRow: View {
             Toggle("", isOn: enabledBinding)
                 .labelsHidden()
         }
+        .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+            if !server.isBuiltIn {
+                Button("Delete", role: .destructive) {
+                    servers.remove(host: server.host)
+                }
+            }
+        }
     }
+#endif
 
     /// No icon once credentials are set; red when they're mandatory and missing; gray when optional.
     @ViewBuilder
@@ -170,12 +293,11 @@ private struct ServerRow: View {
 
 private struct ServerDetailView: View {
     @Environment(ServerStore.self) private var servers
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     let server: BooruServer
 
     @State private var userID: String = ""
     @State private var apiKey: String = ""
-
-    private let swatchColumns = [GridItem(.adaptive(minimum: 44), spacing: 12)]
 
     var body: some View {
         Form {
@@ -188,6 +310,11 @@ private struct ServerDetailView: View {
 #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
 #endif
+#if os(macOS)
+        .formStyle(.grouped)
+        .frame(maxWidth: horizontalSizeClass == .compact ? nil : 640)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+#endif
         .onAppear {
             userID = server.userID ?? ""
             apiKey = server.apiKey ?? ""
@@ -199,17 +326,14 @@ private struct ServerDetailView: View {
         Section {
             TextField(server.credentialUserFieldTitle, text: $userID)
                 .textContentType(.username)
+                .autocorrectionDisabled()
 #if os(iOS)
                 .keyboardType(server.flavor == .gelbooru ? .numberPad : .default)
-                .autocorrectionDisabled()
                 .textInputAutocapitalization(.never)
 #endif
-            TextField("API Key", text: $apiKey)
+            SecureField("API Key", text: $apiKey)
                 .textContentType(.password)
-#if os(iOS)
                 .autocorrectionDisabled()
-                .textInputAutocapitalization(.never)
-#endif
 
             if !userID.isEmpty || !apiKey.isEmpty {
                 Button("Clear", role: .destructive) {
@@ -227,11 +351,13 @@ private struct ServerDetailView: View {
 
     private var colorSection: some View {
         Section {
-            LazyVGrid(columns: swatchColumns, spacing: 12) {
-                ForEach(ServerStore.selectableColorHexes, id: \.self) { hex in
-                    swatch(hex)
+            // Avoid LazyVGrid inside Form on macOS — it collapses / clips badly.
+            ColorSwatchGrid(
+                selectedHex: servers.colorHex(for: server.host),
+                onSelect: { hex in
+                    servers.updateColor(host: server.host, hex: hex)
                 }
-            }
+            )
             .padding(.vertical, 4)
         } header: {
             Text("Border Color")
@@ -240,35 +366,48 @@ private struct ServerDetailView: View {
         }
     }
 
-    private func swatch(_ hex: String) -> some View {
-        let isSelected = servers.colorHex(for: server.host).caseInsensitiveCompare(hex) == .orderedSame
-        return Circle()
-            .fill(Color(hex: hex))
-            .frame(width: 34, height: 34)
-            .overlay {
-                Circle()
-                    .strokeBorder(Color.primary.opacity(isSelected ? 0.9 : 0), lineWidth: 3)
-            }
-            .overlay {
-                if isSelected {
-                    Image(systemName: "checkmark")
-                        .font(.system(size: 14, weight: .bold))
-                        .foregroundStyle(.white)
-                        .shadow(radius: 1)
-                }
-            }
-            .contentShape(Circle())
-            .onTapGesture {
-                servers.updateColor(host: server.host, hex: hex)
-            }
-            .accessibilityLabel(Text(hex))
-    }
-
     private func persistCredentialsIfChanged() {
         let newUser = userID.trimmingCharacters(in: .whitespaces)
         let newKey = apiKey.trimmingCharacters(in: .whitespaces)
         guard newUser != (server.userID ?? "") || newKey != (server.apiKey ?? "") else { return }
         servers.updateCredentials(host: server.host, apiKey: newKey, userID: newUser)
+    }
+}
+
+private struct ColorSwatchGrid: View {
+    let selectedHex: String
+    let onSelect: (String) -> Void
+
+    private let columns = [GridItem(.adaptive(minimum: 36, maximum: 40), spacing: 10)]
+
+    var body: some View {
+        LazyVGrid(columns: columns, spacing: 10) {
+            ForEach(ServerStore.selectableColorHexes, id: \.self) { hex in
+                let isSelected = selectedHex.caseInsensitiveCompare(hex) == .orderedSame
+                Circle()
+                    .fill(Color(hex: hex))
+                    .frame(width: 32, height: 32)
+                    .overlay {
+                        Circle()
+                            .strokeBorder(Color.primary.opacity(isSelected ? 0.9 : 0), lineWidth: 3)
+                    }
+                    .overlay {
+                        if isSelected {
+                            Image(systemName: "checkmark")
+                                .font(.system(size: 12, weight: .bold))
+                                .foregroundStyle(.white)
+                                .shadow(radius: 1)
+                        }
+                    }
+                    .contentShape(Circle())
+                    .onTapGesture { onSelect(hex) }
+                    .accessibilityLabel(Text(hex))
+            }
+        }
+#if os(macOS)
+        // Give Form a real intrinsic height so the grid doesn't collapse to a single line.
+        .frame(minHeight: 120, alignment: .topLeading)
+#endif
     }
 }
 

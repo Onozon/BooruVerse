@@ -97,13 +97,13 @@ struct ZoomableImageView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .task(id: loadTaskID) {
+        .task(id: url?.absoluteString ?? "nil") {
             await load(priority: loadPriority)
         }
-    }
-
-    private var loadTaskID: String {
-        "\(url?.absoluteString ?? "nil")-\(loadPriority.rawValue)"
+        .onChange(of: loadPriority) { _, newPriority in
+            // Boost in-flight work without cancelling/restarting the load task.
+            RemoteImageLoaderBridge.boostPriority(for: url, to: newPriority, maxPixelSize: nil)
+        }
     }
 
     private func resolvedViewport(in geometrySize: CGSize) -> CGSize {
@@ -290,11 +290,13 @@ struct ZoomableImageView: View {
             return
         }
 
-        platformImage = nil
-
+        // Keep any already-shown image while a new network fetch runs (avoids flicker
+        // when the view is recycled). Clear only after a definitive failure below.
         guard let image = await RemoteImageLoaderBridge.load(url: url, priority: priority) else {
             GalleryDebug.log("ZoomableImageView load failed", url: url)
-            failed = true
+            if platformImage == nil {
+                failed = true
+            }
             return
         }
 

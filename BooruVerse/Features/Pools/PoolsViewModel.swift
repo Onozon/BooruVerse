@@ -49,19 +49,27 @@ final class PoolsViewModel {
     }
 
     func bootstrapIfNeeded() async {
-        guard !hasBootstrapped else { return }
+        // Only mark bootstrapped after a completed (non-cancelled) load. Otherwise leaving the
+        // tab mid-fetch permanently stuck the UI on "No Pools".
+        if hasBootstrapped {
+            if pools.isEmpty, !isLoading, !isLoadingMore {
+                await reload(clearVisiblePools: true)
+            }
+            return
+        }
+        await reload(clearVisiblePools: true)
+        guard !Task.isCancelled else { return }
         hasBootstrapped = true
-        await reload()
     }
 
     func refresh() async {
-        await reload()
+        await reload(clearVisiblePools: false)
     }
 
     func search() async {
         let trimmed = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard trimmed != activeQuery else { return }
-        await reload()
+        await reload(clearVisiblePools: true)
     }
 
     func loadMoreIfNeeded(currentPool pool: BooruPool) async {
@@ -75,25 +83,36 @@ final class PoolsViewModel {
     }
 
     func loadPreviews(for pool: BooruPool) async {
-        guard previews[pool.globalID] == nil,
-              !previewsInFlight.contains(pool.globalID),
+        let id = pool.globalID
+        if let existing = previews[id], !existing.isEmpty { return }
+        guard !previewsInFlight.contains(id),
               let poolSite = site(for: pool) as? BooruPools else { return }
-        previewsInFlight.insert(pool.globalID)
-        defer { previewsInFlight.remove(pool.globalID) }
+
+        previewsInFlight.insert(id)
+        defer { previewsInFlight.remove(id) }
 
         do {
             let posts = try await poolSite.fetchPoolPosts(poolID: pool.id, page: 1, limit: Self.previewCount)
-            previews[pool.globalID] = posts.prefix(Self.previewCount).compactMap { $0.previewURL }
+            guard !Task.isCancelled else { return }
+            previews[id] = posts.prefix(Self.previewCount).compactMap(\.previewURL)
         } catch is CancellationError {
+            // Leave cache unset so a later .task retry can load.
             return
         } catch let urlError as URLError where urlError.code == .cancelled {
             return
         } catch {
-            previews[pool.globalID] = []
+            guard !Task.isCancelled else { return }
+            // Mark as attempted-empty so we don't hammer a failing endpoint every appear.
+            if previews[id] == nil {
+                previews[id] = []
+            }
         }
     }
 
-    private func reload() async {
+    /// - Parameter clearVisiblePools: When true (first load / new search), show a loading state.
+    ///   When false (pull-to-refresh), keep the current list until new data arrives so a cancelled
+    ///   refresh cannot wipe the screen into "No Pools".
+    private func reload(clearVisiblePools: Bool) async {
         loadGeneration += 1
         let generation = loadGeneration
 
@@ -101,11 +120,29 @@ final class PoolsViewModel {
         loadedPoolIDs = []
         errorMessage = nil
         cursors = poolServers.map { Cursor(server: $0.server, pools: $0.pools, nextPage: 1, hasMore: true) }
-        pools = []
-        isLoading = true
-        defer { if generation == loadGeneration { isLoading = false } }
+        previewsInFlight = []
+
+        if clearVisiblePools {
+            pools = []
+            previews = [:]
+            isLoading = true
+        } else if pools.isEmpty {
+            isLoading = true
+        }
+
+        defer {
+            if generation == loadGeneration {
+                isLoading = false
+                isLoadingMore = false
+            }
+        }
 
         await fetchPage(generation: generation, isInitial: true)
+
+        if Task.isCancelled, generation == loadGeneration, pools.isEmpty {
+            // Cancelled before any data — allow bootstrap/retry paths to run again.
+            hasBootstrapped = false
+        }
     }
 
     private func loadMore() async {
@@ -122,22 +159,35 @@ final class PoolsViewModel {
 
         let query = activeQuery
         var fetched: [Int: [BooruPool]] = [:]
+        var failures = 0
 
-        await withTaskGroup(of: (Int, [BooruPool]).self) { group in
+        await withTaskGroup(of: (Int, Result<[BooruPool], Error>).self) { group in
             for (index, cursor) in active {
-                let pools = cursor.pools
+                let poolsAPI = cursor.pools
                 let page = cursor.nextPage
                 group.addTask {
-                    let result = (try? await pools.fetchPools(query: query, page: page)) ?? []
-                    return (index, result)
+                    do {
+                        let result = try await poolsAPI.fetchPools(query: query, page: page)
+                        return (index, .success(result))
+                    } catch {
+                        return (index, .failure(error))
+                    }
                 }
             }
             for await (index, result) in group {
-                fetched[index] = result
+                switch result {
+                case .success(let pools):
+                    fetched[index] = pools
+                case .failure(let error):
+                    if error is CancellationError { return }
+                    if let urlError = error as? URLError, urlError.code == .cancelled { return }
+                    failures += 1
+                    fetched[index] = []
+                }
             }
         }
 
-        guard generation == loadGeneration else { return }
+        guard generation == loadGeneration, !Task.isCancelled else { return }
 
         for (index, _) in active {
             let result = fetched[index] ?? []
@@ -163,7 +213,17 @@ final class PoolsViewModel {
         }
 
         if isInitial {
+            // Keep existing rows if a refresh produced nothing due to total failure.
+            if merged.isEmpty, !pools.isEmpty, failures == active.count {
+                errorMessage = "Couldn't refresh pools."
+                return
+            }
             pools = merged
+            let liveIDs = Set(merged.map(\.globalID))
+            previews = previews.filter { liveIDs.contains($0.key) }
+            if merged.isEmpty, failures > 0 {
+                errorMessage = "Couldn't load pools."
+            }
         } else {
             pools.append(contentsOf: merged)
         }

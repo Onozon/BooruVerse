@@ -17,23 +17,38 @@ struct FlowLayout: Layout {
     }
 
     func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout Cache) -> CGSize {
-        if proposal.height == 0 {
-            let width = proposal.width ?? 0
-            return CGSize(width: max(width, 0), height: 0)
+        // List/sheet often proposes nil width during the first pass — don't collapse to
+        // .zero or rows appear empty on macOS.
+        let resolvedWidth: CGFloat
+        if let width = proposal.width, width > 0, width.isFinite {
+            resolvedWidth = width
+        } else if cache.containerWidth > 0 {
+            resolvedWidth = cache.containerWidth
+        } else {
+            // Unspecified width: stack chips on one intrinsic row estimate.
+            var totalWidth: CGFloat = 0
+            var maxHeight: CGFloat = 0
+            for (index, subview) in subviews.enumerated() {
+                let size = subview.sizeThatFits(.unspecified)
+                if index > 0 { totalWidth += spacing }
+                totalWidth += max(size.width, 0)
+                maxHeight = max(maxHeight, size.height)
+            }
+            return CGSize(width: totalWidth, height: maxHeight)
         }
 
-        guard let width = proposal.width, width > 0, width.isFinite else {
-            return .zero
+        if proposal.height == 0 {
+            return CGSize(width: resolvedWidth, height: 0)
         }
 
         guard !subviews.isEmpty else {
-            return CGSize(width: width, height: 0)
+            return CGSize(width: resolvedWidth, height: 0)
         }
 
-        let layout = computeLayout(subviews: subviews, containerWidth: width)
+        let layout = computeLayout(subviews: subviews, containerWidth: resolvedWidth)
         cache.sizes = layout.sizes
         cache.positions = layout.positions
-        cache.containerWidth = width
+        cache.containerWidth = resolvedWidth
         cache.totalSize = layout.totalSize
         return layout.totalSize
     }

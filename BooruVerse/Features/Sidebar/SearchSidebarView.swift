@@ -22,9 +22,9 @@ struct SearchSidebarView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(.background)
         .toolbar {
-#if os(iOS)
-            if horizontalSizeClass == .compact {
-                ToolbarItem(placement: .topBarTrailing) {
+            // Only while the search screen itself is visible (single-column / iOS compact column).
+            if horizontalSizeClass == .compact, preferredCompactColumn == .sidebar {
+                ToolbarItem(placement: .navigation) {
                     Button {
                         preferredCompactColumn = .detail
                     } label: {
@@ -32,10 +32,15 @@ struct SearchSidebarView: View {
                     }
                 }
             }
-#endif
         }
         .sheet(isPresented: $showSavedSetsSheet) {
             SavedTagSetsSheet(model: model)
+#if os(macOS)
+                .frame(
+                    minWidth: horizontalSizeClass == .compact ? 320 : 440,
+                    minHeight: horizontalSizeClass == .compact ? 280 : 360
+                )
+#endif
         }
         .alert("Save Tag Set", isPresented: $showSaveDialog) {
             TextField("Name", text: $saveSetName)

@@ -15,7 +15,7 @@ struct PoolDetailView: View {
     }
 
     var body: some View {
-        let _ = settings.revision
+        let _ = settings.ratingFilter
 
         PostResultsView(
             model: model,

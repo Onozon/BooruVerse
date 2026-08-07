@@ -51,12 +51,19 @@ actor RemoteImageLoader {
 
     private let maxConcurrentDownloads = 6
 
-    private var downloadTasks: [String: Task<PlatformImage?, Never>] = [:]
+    private var downloadTasks: [String: DownloadTaskRecord] = [:]
+    /// Callers currently awaiting a given download key. When the last one leaves, in-flight work can be cancelled.
+    private var loadWaiters: [String: Set<UUID>] = [:]
     private var slotWaiters: [String: [SlotWaiter]] = [:]
     private var slotQueue: [SlotRequest] = []
     private var activeSlotKeys: Set<String> = []
     private var slotSequence: UInt64 = 0
     private var prefetchingKeys: Set<String> = []
+
+    private struct DownloadTaskRecord {
+        let id: UUID
+        let task: Task<PlatformImage?, Never>
+    }
 
     private struct SlotRequest: Comparable {
         let key: String
@@ -130,11 +137,53 @@ actor RemoteImageLoader {
             return cached
         }
 
-        if let existing = downloadTasks[key] {
-            GalleryDebug.log("await in-flight", url: url)
-            return await existing.value
+        let waiterID = UUID()
+        registerLoadWaiter(key: key, id: waiterID)
+        // Full-res (viewer) loads are cancelled when the last waiter scrolls away.
+        // Preview thumbs keep finishing in the background so scroll-back stays snappy.
+        let cancelWhenAbandoned = maxPixelSize == nil
+
+        return await withTaskCancellationHandler {
+            let result = await self.awaitDownload(
+                url: url,
+                key: key,
+                storageKey: storageKey,
+                priority: priority,
+                maxPixelSize: maxPixelSize,
+                progressHandler: progressHandler
+            )
+            await self.unregisterLoadWaiter(key: key, id: waiterID, cancelIfAbandoned: false)
+            return result
+        } onCancel: {
+            Task {
+                await self.unregisterLoadWaiter(
+                    key: key,
+                    id: waiterID,
+                    cancelIfAbandoned: cancelWhenAbandoned
+                )
+            }
+        }
+    }
+
+    private func awaitDownload(
+        url: URL,
+        key: String,
+        storageKey: NSString,
+        priority: RemoteImagePriority,
+        maxPixelSize: Int?,
+        progressHandler: (@Sendable (Double) -> Void)?
+    ) async -> PlatformImage? {
+        if let cached = cache.object(forKey: storageKey)?.image {
+            GalleryDebug.log("cache hit", url: url)
+            return cached
         }
 
+        if let existing = downloadTasks[key] {
+            GalleryDebug.log("await in-flight", url: url)
+            return await existing.task.value
+        }
+
+        let taskID = UUID()
         let task = Task<PlatformImage?, Never>(priority: .userInitiated) {
             await self.performDownload(
                 url: url,
@@ -145,19 +194,44 @@ actor RemoteImageLoader {
                 progressHandler: progressHandler
             )
         }
-        downloadTasks[key] = task
+        downloadTasks[key] = DownloadTaskRecord(id: taskID, task: task)
 
         let result = await task.value
-        downloadTasks[key] = nil
+        if downloadTasks[key]?.id == taskID {
+            downloadTasks[key] = nil
+        }
 
         if let result {
             store(result, forKey: storageKey)
             GalleryDebug.log("download ok", url: url)
+        } else if Task.isCancelled {
+            GalleryDebug.log("download cancelled", url: url)
         } else {
             GalleryDebug.log("download failed", url: url)
         }
 
         return result
+    }
+
+    private func registerLoadWaiter(key: String, id: UUID) {
+        loadWaiters[key, default: []].insert(id)
+    }
+
+    private func unregisterLoadWaiter(key: String, id: UUID, cancelIfAbandoned: Bool) {
+        guard var waiters = loadWaiters[key] else { return }
+        waiters.remove(id)
+        if waiters.isEmpty {
+            loadWaiters[key] = nil
+            if cancelIfAbandoned {
+                if let record = downloadTasks[key] {
+                    GalleryDebug.log("abandon cancel key=\(key)")
+                    record.task.cancel()
+                }
+                slotQueue.removeAll { $0.key == key }
+            }
+        } else {
+            loadWaiters[key] = waiters
+        }
     }
 
     private func performDownload(
@@ -168,6 +242,8 @@ actor RemoteImageLoader {
         maxPixelSize: Int?,
         progressHandler: (@Sendable (Double) -> Void)?
     ) async -> PlatformImage? {
+        if Task.isCancelled { return nil }
+
         await acquireSlot(key: key, priority: priority)
 
         defer { releaseSlot(key: key) }
@@ -361,45 +437,15 @@ actor RemoteImageLoader {
         request: URLRequest,
         progressHandler: (@Sendable (Double) -> Void)?
     ) async -> Data? {
+        // Avoid URLSession.AsyncBytes byte-at-a-time iteration — on large originals
+        // that burns CPU with one async suspension per byte. Use a buffered download instead.
         do {
-            let (bytes, response) = try await session.bytes(for: request)
+            progressHandler?(0.05)
+            let (data, response) = try await session.data(for: request)
             guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
                 return nil
             }
-
-            let expectedLength = http.expectedContentLength
-            var data = Data()
-            if expectedLength > 0 {
-                data.reserveCapacity(Int(min(expectedLength, Int64(Int.max))))
-            }
-
-            var buffer = [UInt8]()
-            buffer.reserveCapacity(65_536)
-            var lastReportedPercent = -1
-
-            for try await byte in bytes {
-                if Task.isCancelled { return nil }
-                buffer.append(byte)
-
-                if buffer.count >= 65_536 {
-                    data.append(contentsOf: buffer)
-                    buffer.removeAll(keepingCapacity: true)
-                }
-
-                if expectedLength > 0 {
-                    let totalCount = data.count + buffer.count
-                    let percent = Int(min(Double(totalCount) / Double(expectedLength), 0.99) * 100)
-                    if percent != lastReportedPercent, percent % 5 == 0 {
-                        lastReportedPercent = percent
-                        progressHandler?(Double(percent) / 100)
-                    }
-                }
-            }
-
-            if !buffer.isEmpty {
-                data.append(contentsOf: buffer)
-            }
-
+            if Task.isCancelled { return nil }
             progressHandler?(1)
             return data
         } catch is CancellationError {
@@ -467,12 +513,19 @@ actor RemoteImageLoader {
     }
 
     private static func cacheCost(for image: PlatformImage) -> Int {
+        // Prefer raw bitmap byte size. Never use NSImage.tiffRepresentation for cost —
+        // that re-encodes the whole image on every cache insert (very expensive on macOS).
 #if canImport(UIKit)
         guard let cgImage = image.cgImage else { return 1 }
-        return cgImage.bytesPerRow * cgImage.height
+        return max(cgImage.bytesPerRow * cgImage.height, 1)
 #else
-        guard let tiff = image.tiffRepresentation else { return 1 }
-        return tiff.count
+        var rect = CGRect(origin: .zero, size: image.size)
+        if let cgImage = image.cgImage(forProposedRect: &rect, context: nil, hints: nil) {
+            return max(cgImage.bytesPerRow * cgImage.height, 1)
+        }
+        // Fallback when no CGImage is available yet (rare for our decode path).
+        let pixelCount = max(Int(image.size.width * image.size.height), 1)
+        return pixelCount * 4
 #endif
     }
 

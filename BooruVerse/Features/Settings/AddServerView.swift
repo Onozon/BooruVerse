@@ -29,9 +29,9 @@ struct AddServerView: View {
             Form {
                 Section {
                     TextField("example.com", text: $host)
+                        .autocorrectionDisabled()
 #if os(iOS)
                         .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
                         .keyboardType(.URL)
 #endif
                         .onSubmit {
@@ -44,6 +44,9 @@ struct AddServerView: View {
             .navigationTitle("Add Server")
 #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
+#endif
+#if os(macOS)
+            .formStyle(.grouped)
 #endif
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {

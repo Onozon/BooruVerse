@@ -4,36 +4,47 @@ struct SavedTagSetsSheet: View {
     @Bindable var model: BrowseViewModel
     @Environment(\.dismiss) private var dismiss
 
+    /// Observe the store directly — nested access via BrowseViewModel.computed was
+    /// unreliable for sheet presentation on macOS.
+    @State private var store = SavedTagSetStore.shared
+
     var body: some View {
         NavigationStack {
             Group {
-                if model.savedTagSets.isEmpty {
+                if store.sets.isEmpty {
                     ContentUnavailableView(
                         "No Saved Sets",
                         systemImage: "tray",
                         description: Text("Save the current tags with the button next to Search.")
                     )
                 } else {
-                    List {
-                        ForEach(model.savedTagSets) { set in
-                            Button {
-                                Task {
-                                    await model.applySavedTagSet(set)
-                                    dismiss()
+                    ScrollView {
+                        LazyVStack(alignment: .leading, spacing: 0) {
+                            ForEach(store.sets) { set in
+                                Button {
+                                    Task {
+                                        await model.applySavedTagSet(set)
+                                        dismiss()
+                                    }
+                                } label: {
+                                    SavedTagSetRow(set: set, model: model)
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                        .padding(.horizontal, 16)
+                                        .padding(.vertical, 12)
+                                        .contentShape(Rectangle())
                                 }
-                            } label: {
-                                SavedTagSetRow(set: set, model: model)
-                            }
-                            .buttonStyle(.plain)
-                        }
-                        .onDelete { indexSet in
-                            let sets = model.savedTagSets
-                            for index in indexSet {
-                                model.deleteSavedTagSet(sets[index])
+                                .buttonStyle(.plain)
+                                .contextMenu {
+                                    Button("Delete", role: .destructive) {
+                                        store.delete(set)
+                                    }
+                                }
+
+                                Divider()
+                                    .padding(.leading, 16)
                             }
                         }
                     }
-                    .listStyle(.plain)
                 }
             }
             .navigationTitle("Saved Tag Sets")
@@ -43,16 +54,20 @@ struct SavedTagSetsSheet: View {
                 }
             }
             .onAppear {
+                store.reloadFromDisk()
                 resolveAllTagColors()
             }
-            .onChange(of: model.savedTagSets) { _, _ in
+            .onChange(of: store.revision) { _, _ in
                 resolveAllTagColors()
             }
         }
+#if os(macOS)
+        .frame(minWidth: 320, idealWidth: 480, minHeight: 280, idealHeight: 420)
+#endif
     }
 
     private func resolveAllTagColors() {
-        let tags = model.savedTagSets.flatMap(\.tags)
+        let tags = store.sets.flatMap(\.tags)
         model.resolveTagNames(tags)
     }
 }
@@ -77,8 +92,7 @@ private struct SavedTagSetRow: View {
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            .fixedSize(horizontal: false, vertical: true)
         }
-        .padding(.vertical, 4)
+        .padding(.vertical, 2)
     }
 }

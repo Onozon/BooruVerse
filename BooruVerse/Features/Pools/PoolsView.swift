@@ -34,7 +34,9 @@ struct PoolsView: View {
                     }
                 }
         }
-        .task { await model.bootstrapIfNeeded() }
+        .task {
+            await model.bootstrapIfNeeded()
+        }
     }
 
     @ViewBuilder
@@ -59,29 +61,40 @@ struct PoolsView: View {
                 description: Text("Try a different search.")
             )
         } else {
-            List {
-                ForEach(model.pools, id: \.globalID) { pool in
-                    NavigationLink(value: pool) {
-                        PoolRowView(
-                            pool: pool,
-                            previewURLs: model.previewURLs(for: pool),
-                            serverColor: serverColor(for: pool)
-                        )
-                    }
-                    .task { await model.loadMoreIfNeeded(currentPool: pool) }
-                    .task { await model.loadPreviews(for: pool) }
-                }
+            // ScrollView + LazyVStack keeps NavigationLink rows stable on macOS.
+            // List + GeometryReader thumbnails was collapsing into a bare preview grid
+            // after cancelled/resumed preview tasks.
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 0) {
+                    ForEach(model.pools, id: \.globalID) { pool in
+                        NavigationLink(value: pool) {
+                            PoolRowView(
+                                pool: pool,
+                                previewURLs: model.previewURLs(for: pool),
+                                serverColor: serverColor(for: pool)
+                            )
+                        }
+                        .buttonStyle(.plain)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 10)
+                        .task(id: "more-\(pool.globalID)") {
+                            await model.loadMoreIfNeeded(currentPool: pool)
+                        }
+                        .task(id: "preview-\(pool.globalID)") {
+                            await model.loadPreviews(for: pool)
+                        }
 
-                if model.isLoadingMore {
-                    HStack {
-                        Spacer()
-                        ProgressView()
-                        Spacer()
+                        Divider()
+                            .padding(.leading, 16)
                     }
-                    .listRowSeparator(.hidden)
+
+                    if model.isLoadingMore {
+                        ProgressView()
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 16)
+                    }
                 }
             }
-            .listStyle(.plain)
             .refreshable { await model.refresh() }
         }
     }
@@ -106,7 +119,9 @@ private struct PoolRowView: View {
                     }
                     Text(pool.displayName)
                         .font(.headline)
+                        .foregroundStyle(.primary)
                         .lineLimit(2)
+                        .multilineTextAlignment(.leading)
                 }
 
                 if !pool.description.isEmpty {
@@ -116,37 +131,84 @@ private struct PoolRowView: View {
                         .lineLimit(1)
                 }
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
 
             previewStrip
+                // Previews are decorative; taps must hit the NavigationLink row.
+                .allowsHitTesting(false)
 
             Text("^[\(pool.postCount) post](inflect: true)")
                 .font(.caption)
                 .foregroundStyle(.tertiary)
         }
-        .padding(.vertical, 6)
+        .padding(.vertical, 4)
+        .contentShape(Rectangle())
     }
 
     @ViewBuilder
     private var previewStrip: some View {
-        if previewURLs.isEmpty {
-            HStack(spacing: 4) {
-                ForEach(0..<visibleCount, id: \.self) { _ in
-                    RoundedRectangle(cornerRadius: 6)
-                        .fill(Color.gray.opacity(0.12))
-                        .frame(maxWidth: .infinity)
-                        .frame(height: thumbnailHeight)
-                }
+        HStack(spacing: 4) {
+            ForEach(0..<visibleCount, id: \.self) { index in
+                let url = previewURLs.indices.contains(index) ? previewURLs[index] : nil
+                PoolPreviewThumb(url: url, height: thumbnailHeight)
             }
-            .redacted(reason: .placeholder)
-        } else {
-            HStack(spacing: 4) {
-                ForEach(Array(previewURLs.prefix(visibleCount).enumerated()), id: \.offset) { _, url in
-                    RemoteThumbnail(url: url, contentMode: .fill, maxPixelSize: 220)
-                        .frame(maxWidth: .infinity)
-                        .frame(height: thumbnailHeight)
-                        .clipShape(RoundedRectangle(cornerRadius: 6))
-                }
+        }
+        .frame(height: thumbnailHeight)
+    }
+}
+
+/// Fixed-size pool strip thumbnail. Avoids GeometryReader so List/LazyVStack rows
+/// cannot expand into a full-screen preview grid after image loads.
+private struct PoolPreviewThumb: View {
+    let url: URL?
+    let height: CGFloat
+
+    @State private var image: Image?
+    @State private var failed = false
+
+    var body: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 6)
+                .fill(Color.gray.opacity(0.12))
+
+            if let image {
+                image
+                    .resizable()
+                    .scaledToFill()
+            } else if failed {
+                Image(systemName: "photo")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
             }
+        }
+        .frame(maxWidth: .infinity)
+        .frame(height: height)
+        .clipShape(RoundedRectangle(cornerRadius: 6))
+        .task(id: url?.absoluteString ?? "nil") {
+            await load()
+        }
+    }
+
+    private func load() async {
+        failed = false
+        guard let url else {
+            image = nil
+            return
+        }
+
+        if let cached = await RemoteImageLoaderBridge.cachedImage(for: url, maxPixelSize: 220) {
+            image = cached.swiftUIImage
+            return
+        }
+
+        if let loaded = await RemoteImageLoaderBridge.load(
+            url: url,
+            priority: .visible,
+            maxPixelSize: 220
+        ) {
+            image = loaded.swiftUIImage
+        } else if image == nil {
+            failed = true
         }
     }
 }

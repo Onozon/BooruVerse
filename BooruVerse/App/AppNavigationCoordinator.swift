@@ -1,11 +1,33 @@
 import SwiftUI
 
-enum AppTab: Hashable {
+enum AppTab: Hashable, CaseIterable, Identifiable {
     case feed
     case browse
     case pools
     case favorites
     case settings
+
+    var id: Self { self }
+
+    var title: String {
+        switch self {
+        case .feed: "Feed"
+        case .browse: "Browse"
+        case .pools: "Pools"
+        case .favorites: "Favorites"
+        case .settings: "Settings"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .feed: "flame"
+        case .browse: "magnifyingglass"
+        case .pools: "books.vertical"
+        case .favorites: "heart"
+        case .settings: "gearshape"
+        }
+    }
 }
 
 @MainActor

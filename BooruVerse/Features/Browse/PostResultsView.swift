@@ -18,6 +18,11 @@ struct PostResultsView: View {
 
     private let adaptiveColumns = [GridItem(.adaptive(minimum: GalleryLayoutMetrics.minTileWidth), spacing: GalleryLayoutMetrics.spacing)]
 
+    /// Narrow / phone-like chrome: one card per row, progressive preview → viewer upgrade.
+    private var isCompactGallery: Bool {
+        horizontalSizeClass == .compact
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             if let errorMessage = model.errorMessage {
@@ -35,18 +40,17 @@ struct PostResultsView: View {
 #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
         .navigationBarBackButtonHidden(showsSidebarToggle && horizontalSizeClass == .compact)
-        .hideSystemSidebarToggle(showsSidebarToggle && horizontalSizeClass == .compact)
         .toolbarBackground(.background, for: .navigationBar)
         .toolbarBackground(.visible, for: .navigationBar)
 #endif
+        .hideSystemSidebarToggle(showsSidebarToggle && horizontalSizeClass == .compact)
         .modifier(CompactSidebarPresentGesture(
             preferredCompactColumn: $preferredCompactColumn,
             isEnabled: showsSidebarToggle
         ))
         .toolbar {
-#if os(iOS)
             if showsSidebarToggle, horizontalSizeClass == .compact {
-                ToolbarItem(placement: .topBarLeading) {
+                ToolbarItem(placement: .navigation) {
                     Button {
                         preferredCompactColumn = .sidebar
                     } label: {
@@ -54,7 +58,6 @@ struct PostResultsView: View {
                     }
                 }
             }
-#endif
 
             ToolbarItem(placement: .automatic) {
                 if model.isLoading || model.isLoadingMore {
@@ -139,52 +142,62 @@ struct PostResultsView: View {
 
     @ViewBuilder
     private func galleryContent(contentWidth: CGFloat) -> some View {
-        switch tilingMode {
-        case .adaptive:
-            adaptiveGallery
-        case .columns:
-            columnsGallery(contentWidth: contentWidth)
+        if isCompactGallery {
+            compactSingleColumnGallery(contentWidth: contentWidth)
+        } else {
+            switch tilingMode {
+            case .adaptive:
+                adaptiveGallery
+            case .columns:
+                columnsGallery(contentWidth: contentWidth)
+            }
         }
+    }
+
+    /// One full-width card per row; preview first, viewer upgrade while on screen.
+    private func compactSingleColumnGallery(contentWidth: CGFloat) -> some View {
+        LazyVStack(spacing: GalleryLayoutMetrics.spacing) {
+            ForEach(model.posts, id: \.globalID) { post in
+                postCell(for: post, tileWidth: contentWidth, upgradesToViewer: true)
+            }
+        }
+        .frame(width: contentWidth, alignment: .topLeading)
     }
 
     private var adaptiveGallery: some View {
         LazyVGrid(columns: adaptiveColumns, spacing: GalleryLayoutMetrics.spacing) {
             ForEach(model.posts, id: \.globalID) { post in
-                postCell(for: post)
+                postCell(for: post, upgradesToViewer: false)
             }
         }
     }
 
     private func columnsGallery(contentWidth: CGFloat) -> some View {
-        let layoutWidth = max(contentWidth, GalleryLayoutMetrics.minTileWidth)
-        let columnCount = GalleryLayoutEngine.columnCount(for: layoutWidth)
-        let columnWidth = GalleryLayoutEngine.columnWidth(for: layoutWidth, columnCount: columnCount)
-        let gridWidth = GalleryLayoutEngine.gridWidth(columnCount: columnCount, columnWidth: columnWidth)
-        let columns = GalleryLayoutEngine.masonryColumns(
+        ColumnsMasonryGallery(
             posts: model.posts,
-            columnCount: columnCount,
-            columnWidth: columnWidth
+            listGeneration: model.listGeneration,
+            contentWidth: contentWidth,
+            borderSignature: serverStore.enabledCount,
+            upgradesToViewer: false,
+            borderColorProvider: { post in borderColor(for: post) },
+            onTap: { openGallery(post: $0) },
+            onLongPress: { openPeek(for: $0) },
+            onAppearPost: { handlePostAppear(for: $0) }
         )
-
-        return HStack(alignment: .top, spacing: GalleryLayoutMetrics.spacing) {
-            ForEach(Array(columns.enumerated()), id: \.offset) { _, column in
-                LazyVStack(spacing: GalleryLayoutMetrics.spacing) {
-                    ForEach(column) { item in
-                        postCell(for: item.post, tileWidth: columnWidth)
-                    }
-                }
-                .frame(width: columnWidth, alignment: .top)
-            }
-        }
-        .frame(width: gridWidth, alignment: .topLeading)
+        .equatable()
     }
 
     @ViewBuilder
-    private func postCell(for post: BooruPost, tileWidth: CGFloat? = nil) -> some View {
+    private func postCell(
+        for post: BooruPost,
+        tileWidth: CGFloat? = nil,
+        upgradesToViewer: Bool
+    ) -> some View {
         PostThumbnailCell(
             post: post,
             tileWidth: tileWidth,
             borderColor: borderColor(for: post),
+            upgradesToViewer: upgradesToViewer,
             onTap: { openGallery(post: post) },
             onLongPress: { openPeek(for: post) }
         )
@@ -262,6 +275,7 @@ private struct PostThumbnailCell: View {
     let post: BooruPost
     var tileWidth: CGFloat?
     var borderColor: Color?
+    var upgradesToViewer = false
     let onTap: () -> Void
     let onLongPress: () -> Void
 
@@ -282,15 +296,20 @@ private struct PostThumbnailCell: View {
 
     private var cellContent: some View {
         VStack(alignment: .leading, spacing: 6) {
-            RemoteThumbnail(url: post.previewURL, contentMode: .fit)
-                .aspectRatio(post.aspectRatio, contentMode: .fit)
-                .clipShape(RoundedRectangle(cornerRadius: 8))
-                .overlay {
-                    if let borderColor {
-                        RoundedRectangle(cornerRadius: 8)
-                            .strokeBorder(borderColor, lineWidth: 2)
-                    }
+            ProgressiveRemoteImage(
+                previewURL: post.previewURL,
+                viewerURL: post.viewerURL,
+                upgradesToViewer: upgradesToViewer,
+                contentMode: .fit
+            )
+            .aspectRatio(post.aspectRatio, contentMode: .fit)
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .overlay {
+                if let borderColor {
+                    RoundedRectangle(cornerRadius: 8)
+                        .strokeBorder(borderColor, lineWidth: 2)
                 }
+            }
 
             HStack {
                 Text("#\(post.id)")
@@ -302,6 +321,63 @@ private struct PostThumbnailCell: View {
                     .foregroundStyle(.secondary)
             }
         }
+    }
+}
+
+/// Masonry columns are expensive (O(posts × columns)). Equatable skips recompute when
+/// the post list identity and width bucket are unchanged — critical on wide Mac windows.
+private struct ColumnsMasonryGallery: View, Equatable {
+    let posts: [BooruPost]
+    let listGeneration: Int
+    let contentWidth: CGFloat
+    /// Invalidates the equatable cache when multi-server borders appear/disappear.
+    let borderSignature: Int
+    var upgradesToViewer = false
+    let borderColorProvider: (BooruPost) -> Color?
+    let onTap: (BooruPost) -> Void
+    let onLongPress: (BooruPost) -> Void
+    let onAppearPost: (BooruPost) -> Void
+
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.listGeneration == rhs.listGeneration
+            && lhs.posts.count == rhs.posts.count
+            && lhs.posts.last?.globalID == rhs.posts.last?.globalID
+            && lhs.borderSignature == rhs.borderSignature
+            && lhs.upgradesToViewer == rhs.upgradesToViewer
+            && Int(lhs.contentWidth * 2) == Int(rhs.contentWidth * 2)
+    }
+
+    var body: some View {
+        let layoutWidth = max(contentWidth, GalleryLayoutMetrics.minTileWidth)
+        let columnCount = GalleryLayoutEngine.columnCount(for: layoutWidth)
+        let columnWidth = GalleryLayoutEngine.columnWidth(for: layoutWidth, columnCount: columnCount)
+        let gridWidth = GalleryLayoutEngine.gridWidth(columnCount: columnCount, columnWidth: columnWidth)
+        let columns = GalleryLayoutEngine.masonryColumns(
+            posts: posts,
+            columnCount: columnCount,
+            columnWidth: columnWidth
+        )
+
+        HStack(alignment: .top, spacing: GalleryLayoutMetrics.spacing) {
+            ForEach(Array(columns.enumerated()), id: \.offset) { _, column in
+                LazyVStack(spacing: GalleryLayoutMetrics.spacing) {
+                    ForEach(column) { item in
+                        PostThumbnailCell(
+                            post: item.post,
+                            tileWidth: columnWidth,
+                            borderColor: borderColorProvider(item.post),
+                            upgradesToViewer: upgradesToViewer,
+                            onTap: { onTap(item.post) },
+                            onLongPress: { onLongPress(item.post) }
+                        )
+                        .id(item.post.globalID)
+                        .onAppear { onAppearPost(item.post) }
+                    }
+                }
+                .frame(width: columnWidth, alignment: .top)
+            }
+        }
+        .frame(width: gridWidth, alignment: .topLeading)
     }
 }
 
