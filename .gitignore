@@ -1,14 +1,12 @@
 # =============================================================================
-# Konepa — корневой .gitignore (Python GUI + Qt/C++ подпроект)
+# Konepa monorepo
 # =============================================================================
 
-# --- macOS ---
+# --- macOS / Windows ---
 .DS_Store
 .AppleDouble
 .LSOverride
 ._*
-
-# --- Windows ---
 Thumbs.db
 Desktop.ini
 ehthumbs.db
@@ -44,24 +42,19 @@ coverage.xml
 geckodriver.log
 chromedriver.log
 
-# --- Секреты и локальные настройки ---
+# --- Secrets & local runtime state ---
 session_cookie.txt
 .env
 .env.*
 *.local.json
+url_history.json
+download_state.json
+file_types_settings.json
 
-# --- Runtime-данные приложения (только корень репозитория) ---
+# --- Runtime data (repo root) ---
 /cache/
 /downloads/
 /temp_analysis/
-download_state.json
-url_history.json
-file_types_settings.json
-
-# --- Логи ---
-*.log
-
-# --- Отладочные HTML-фикстуры и дампы ---
 /html_samples/
 /debug/
 /*.html
@@ -70,7 +63,10 @@ file_types_settings.json
 /artists_page_analysis.json
 /artists_page_analysis_selenium.json
 
-# --- Qt / C++ (подпроект Konepa/Konepa) ---
+# --- Logs ---
+*.log
+
+# --- Qt / C++ (Konepa/Konepa) ---
 Konepa/Konepa/cache/
 Konepa/Konepa/session_cookie.txt
 Konepa/Konepa/build/
@@ -83,8 +79,6 @@ Konepa/Konepa/.ninja_deps
 Konepa/Konepa/compile_commands.json
 Konepa/Konepa/*_autogen/
 Konepa/Konepa/Testing/
-
-# Qt/C++ артефакты сборки
 *.moc
 moc_*.cpp
 ui_*.h
@@ -105,7 +99,21 @@ Makefile
 *.prl
 *.autosave
 
-# --- IDE / редакторы ---
+# --- Xcode / Swift ---
+DerivedData/
+*.xcuserstate
+**/xcuserdata/
+*.xccheckout
+*.xcscmblueprint
+*.moved-aside
+*.hmap
+*.ipa
+*.dSYM.zip
+*.dSYM
+timeline.xctimeline
+playground.xcworkspace
+
+# --- IDE / editors ---
 .vscode/
 .idea/
 *.swp

@@ -1,119 +1,93 @@
-# Kemono Parser v6
+# Konepa
 
-Парсер и графический интерфейс для загрузки контента с kemono.cr
+Monorepo with clients for [Kemono](https://kemono.cr) and Booru-style image boards.
 
-## 🚀 Быстрый старт
+## Projects
 
-```bash
-# Активация виртуального окружения
-source activate_venv.sh
-
-# Запуск приложения
-python3 kemono_gui_v6.py
-```
-
-## 📁 Структура проекта
-
-### Основные файлы
-- `kemono_gui_v6.py` - **Основное приложение с GUI**
-- `kemono_parser.py` - Модуль парсинга kemono.cr
-- `interactive_downloader.py` - Интерактивный загрузчик контента
-- `requirements.txt` - Зависимости проекта
-- `activate_venv.sh` - Скрипт активации виртуального окружения
-
-### Папки
-
-#### 📂 `tests/` - Тесты
-Все тестовые файлы (`test_*.py`):
-- Тесты GUI компонентов
-- Тесты парсинга и загрузки
-- Тесты HTTP/Selenium функциональности
-
-#### 📂 `docs/` - Документация
-- `README.md` - Основная документация (этот файл)
-- `GUIDE.md` - Подробное руководство пользователя
-- `GUI_README.md` - Документация по GUI
-- `VENV_SETUP.md` - Инструкция по настройке виртуального окружения
-- `USABILITY_IMPROVEMENTS.md` - Улучшения юзабилити
-
-#### 📂 `debug/` - Отладочные файлы
-- `debug_*.py` - Скрипты для отладки
-- `analyze_*.py` - Анализ структуры страниц
-- `diagnose_kemono.py` - Диагностика проблем
-
-#### 📂 `html_samples/` - HTML примеры
-- Сохраненные HTML страницы для анализа
-- Примеры результатов поиска
-- Отладочные HTML файлы
-
-#### 📂 `legacy/` - Старые версии
-- `kemono_gui.py` - Первая версия GUI
-- `kemono_gui_v2.py` - `kemono_gui_v5.py` - Предыдущие версии
-- Сохранено для истории разработки
-
-#### 📂 `scripts/` - Утилитарные скрипты
-- `examples.py` - Примеры использования
-- `quick_start.py` - Быстрый старт
-- `run_downloader.py` - Автономный загрузчик
-
-#### 📂 `cache/` - Кэш данных
-- `media_previews/` - Превью изображений
-- `post_thumbnails/` - Миниатюры постов
-- `posts_metadata/` - Метаданные постов
-
-#### 📂 `downloads/` - Загрузки
-Папка для сохранения загруженного контента
-
-## 🔧 Функции
-
-### MediaViewer (Просмотрщик медиа)
-- **Полноэкранный просмотр** без рамок
-- **Pinch-to-zoom** для Mac тачпадов
-- **Перетаскивание** увеличенных изображений
-- **Клавиатурные сочетания**: `+`/`-`/`0` для масштабирования
-
-### Основные возможности
-- Поиск авторов и контента
-- Кэширование для быстрой работы
-- Встроенный браузер для навигации
-- Настройка типов загружаемых файлов
-- Автоматическое масштабирование интерфейса
-
-## 🛠️ Разработка
-
-### Виртуальное окружение
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-```
-
-### Запуск тестов
-```bash
-cd tests/
-python3 test_*.py  # Запуск отдельных тестов
-```
-
-### Отладка
-```bash
-cd debug/
-python3 diagnose_kemono.py  # Диагностика проблем
-```
-
-## 📋 Системные требования
-
-- **Python 3.8+**
-- **PyQt6** для GUI
-- **Selenium** для веб-автоматизации
-- **macOS/Linux/Windows**
-
-## 🚨 Важные замечания
-
-- Используйте виртуальное окружение для изоляции зависимостей
-- Кэш может занимать много места со временем
-- При проблемах смотрите `docs/` для решений
+| Path | Stack | Description |
+|------|--------|-------------|
+| [`KemonoXcode/BooruVerse`](KemonoXcode/BooruVerse) | SwiftUI (iOS / iPadOS / macOS) | Multi-server Booru browser (Moebooru, Danbooru 2.x, Gelbooru) |
+| [`KemonoXcode/Konepa`](KemonoXcode/Konepa) | SwiftUI + SwiftData | Native Kemono client with offline catalog sync |
+| [`kemono/`](kemono) | Python + PyQt6 | Original Kemono parser and desktop GUI |
+| [`Konepa/Konepa`](Konepa/Konepa) | Qt / C++ / QML | Earlier native Kemono GUI (legacy) |
 
 ---
 
-*Последняя версия: v6 с улучшенным MediaViewer для Mac*
+## BooruVerse
 
+SwiftUI app for browsing one or more Booru APIs at once.
+
+**Features**
+- Multi-server feed (enable any combination of built-in / custom hosts)
+- Browse by tags, favorites, pools, and popular feed
+- Gallery with zoom, full-quality fetch, and tiling modes
+- Global content rating filter (server-side where supported, client fallback)
+- Per-server border colors, optional API credentials (Gelbooru / Danbooru)
+
+**Built-in servers** (toggle in Settings): `safebooru.org`, `yande.re`, `konachan.com`, `danbooru.donmai.us`, `gelbooru.com`
+
+**Open in Xcode**
+
+```bash
+open KemonoXcode/BooruVerse/BooruVerse.xcodeproj
+```
+
+Requires Xcode 16+ and a recent Apple SDK (folder-synced project).
+
+---
+
+## Konepa (Swift)
+
+Native Kemono client: author/post search, subscriptions, recent history, offline catalog import.
+
+```bash
+open KemonoXcode/Konepa/Konepa.xcodeproj
+```
+
+---
+
+## kemono (Python)
+
+Parser and PyQt6 GUI for downloading from Kemono.
+
+```bash
+cd kemono
+python3 -m venv ../.venv
+source ../.venv/bin/activate   # Windows: ..\.venv\Scripts\activate
+pip install -r requirements.txt
+python kemono_gui_v6.py
+```
+
+| File | Role |
+|------|------|
+| `kemono_parser.py` | Core HTTP / Selenium parser |
+| `kemono_gui_v6.py` | Current GUI |
+| `interactive_downloader.py` | CLI-style downloader |
+| `config.json` | Default settings |
+| `legacy/` | Older GUI revisions (v1–v5) |
+
+Do not commit `session_cookie.txt` or other session files — they are gitignored.
+
+---
+
+## Konepa (Qt, legacy)
+
+CMake + Qt 6 desktop client under `Konepa/Konepa/`. Build artifacts stay out of git (`build/` is ignored).
+
+```bash
+cd Konepa/Konepa
+cmake -B build -DCMAKE_PREFIX_PATH="$(brew --prefix qt)"
+cmake --build build
+```
+
+---
+
+## Docs
+
+- [`docs/pybooru-readthedocs-io-en-stable.epub`](docs/pybooru-readthedocs-io-en-stable.epub) — Pybooru API reference used while building BooruVerse.
+
+---
+
+## License / usage
+
+Personal / research tooling for public APIs and mirrored content. Respect each site’s terms of service and local law. Keep API keys and session cookies out of the repository.

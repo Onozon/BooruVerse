@@ -1,0 +1,541 @@
+import Foundation
+import SwiftUI
+import ImageIO
+
+#if canImport(UIKit)
+import UIKit
+typealias PlatformImage = UIImage
+#elseif canImport(AppKit)
+import AppKit
+typealias PlatformImage = NSImage
+#endif
+
+enum RemoteImagePriority: Int, Sendable, Comparable {
+    case background = 0
+    case visible = 1
+    case high = 2
+
+    nonisolated static func < (lhs: Self, rhs: Self) -> Bool {
+        lhs.rawValue < rhs.rawValue
+    }
+
+    nonisolated func raised(to other: Self) -> Self {
+        Self(rawValue: max(rawValue, other.rawValue)) ?? self
+    }
+}
+
+enum RemoteImageLoaderDefaults {
+    static let thumbnailPixelSize = 480
+}
+
+actor RemoteImageLoader {
+    static let shared = RemoteImageLoader()
+
+    /// Dedicated session for image downloads: fail fast on stalled connections (e.g. HTTP/3
+    /// over a VPN) so we can retry over the fallback path instead of hanging on defaults.
+    private static let session: URLSession = {
+        let config = URLSessionConfiguration.default
+        config.timeoutIntervalForRequest = 15
+        config.timeoutIntervalForResource = 60
+        config.httpMaximumConnectionsPerHost = 6
+        config.waitsForConnectivity = true
+        return URLSession(configuration: config)
+    }()
+
+    private let cache: NSCache<NSString, CacheBox> = {
+        let cache = NSCache<NSString, CacheBox>()
+        cache.countLimit = 400
+        cache.totalCostLimit = 96 * 1024 * 1024
+        return cache
+    }()
+
+    private let maxConcurrentDownloads = 6
+
+    private var downloadTasks: [String: Task<PlatformImage?, Never>] = [:]
+    private var slotWaiters: [String: [SlotWaiter]] = [:]
+    private var slotQueue: [SlotRequest] = []
+    private var activeSlotKeys: Set<String> = []
+    private var slotSequence: UInt64 = 0
+    private var prefetchingKeys: Set<String> = []
+
+    private struct SlotRequest: Comparable {
+        let key: String
+        var priority: RemoteImagePriority
+        var sequence: UInt64
+
+        static func < (lhs: Self, rhs: Self) -> Bool {
+            if lhs.priority.rawValue != rhs.priority.rawValue {
+                return lhs.priority.rawValue < rhs.priority.rawValue
+            }
+            return lhs.sequence < rhs.sequence
+        }
+    }
+
+    private struct SlotWaiter {
+        let id: UUID
+        let continuation: CheckedContinuation<Void, Never>
+    }
+
+    func evict(url: URL?) {
+        guard let url else { return }
+        cache.removeObject(forKey: url.absoluteString as NSString)
+    }
+
+    func cachedImage(for url: URL?, maxPixelSize: Int? = nil) -> PlatformImage? {
+        guard let url else { return nil }
+        return cache.object(forKey: cacheKey(for: url, maxPixelSize: maxPixelSize))?.image
+    }
+
+    nonisolated func prefetch(_ url: URL?, priority: RemoteImagePriority = .background, maxPixelSize: Int? = RemoteImageLoaderDefaults.thumbnailPixelSize) {
+        guard let url else { return }
+        Task {
+            await self.prefetchIfNeeded(url: url, priority: priority, maxPixelSize: maxPixelSize)
+        }
+    }
+
+    private func prefetchIfNeeded(url: URL, priority: RemoteImagePriority, maxPixelSize: Int?) async {
+        let key = taskKey(for: url, maxPixelSize: maxPixelSize)
+        if cachedImage(for: url, maxPixelSize: maxPixelSize) != nil { return }
+        if downloadTasks[key] != nil { return }
+        if prefetchingKeys.contains(key) { return }
+
+        prefetchingKeys.insert(key)
+        defer { prefetchingKeys.remove(key) }
+
+        _ = await load(url: url, priority: priority, maxPixelSize: maxPixelSize)
+    }
+
+    func boostPriority(for url: URL?, to priority: RemoteImagePriority = .visible, maxPixelSize: Int? = nil) {
+        guard let url else { return }
+        let key = taskKey(for: url, maxPixelSize: maxPixelSize)
+        guard let index = slotQueue.firstIndex(where: { $0.key == key }) else { return }
+
+        slotQueue[index].priority = slotQueue[index].priority.raised(to: priority)
+        slotQueue[index].sequence = nextSlotSequence()
+        slotQueue.sort(by: >)
+        grantSlotsIfNeeded()
+    }
+
+    func load(
+        url: URL,
+        priority: RemoteImagePriority = .visible,
+        maxPixelSize: Int? = nil,
+        progressHandler: (@Sendable (Double) -> Void)? = nil
+    ) async -> PlatformImage? {
+        let key = taskKey(for: url, maxPixelSize: maxPixelSize)
+        let storageKey = cacheKey(for: url, maxPixelSize: maxPixelSize)
+
+        if let cached = cache.object(forKey: storageKey)?.image {
+            GalleryDebug.log("cache hit", url: url)
+            return cached
+        }
+
+        if let existing = downloadTasks[key] {
+            GalleryDebug.log("await in-flight", url: url)
+            return await existing.value
+        }
+
+        let task = Task<PlatformImage?, Never>(priority: .userInitiated) {
+            await self.performDownload(
+                url: url,
+                key: key,
+                storageKey: storageKey,
+                priority: priority,
+                maxPixelSize: maxPixelSize,
+                progressHandler: progressHandler
+            )
+        }
+        downloadTasks[key] = task
+
+        let result = await task.value
+        downloadTasks[key] = nil
+
+        if let result {
+            store(result, forKey: storageKey)
+            GalleryDebug.log("download ok", url: url)
+        } else {
+            GalleryDebug.log("download failed", url: url)
+        }
+
+        return result
+    }
+
+    private func performDownload(
+        url: URL,
+        key: String,
+        storageKey: NSString,
+        priority: RemoteImagePriority,
+        maxPixelSize: Int?,
+        progressHandler: (@Sendable (Double) -> Void)?
+    ) async -> PlatformImage? {
+        await acquireSlot(key: key, priority: priority)
+
+        defer { releaseSlot(key: key) }
+
+        if Task.isCancelled { return nil }
+
+        if let cached = cache.object(forKey: storageKey)?.image {
+            return cached
+        }
+
+        GalleryDebug.log("download start", url: url)
+        return await Self.downloadAndDecode(
+            from: url,
+            maxPixelSize: maxPixelSize,
+            progressHandler: progressHandler
+        )
+    }
+
+    private func store(_ image: PlatformImage, forKey key: NSString) {
+        cache.setObject(CacheBox(image: image), forKey: key, cost: Self.cacheCost(for: image))
+    }
+
+    private func cacheKey(for url: URL, maxPixelSize: Int?) -> NSString {
+        if let maxPixelSize {
+            return "\(url.absoluteString)|thumb\(maxPixelSize)" as NSString
+        }
+        return url.absoluteString as NSString
+    }
+
+    private func taskKey(for url: URL, maxPixelSize: Int?) -> String {
+        if let maxPixelSize {
+            return "\(url.absoluteString)|thumb\(maxPixelSize)"
+        }
+        return url.absoluteString
+    }
+
+    private func acquireSlot(key: String, priority: RemoteImagePriority) async {
+        if activeSlotKeys.contains(key) { return }
+
+        if activeSlotKeys.count < maxConcurrentDownloads {
+            activeSlotKeys.insert(key)
+            return
+        }
+
+        let waiterID = UUID()
+
+        await withTaskCancellationHandler {
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                enqueueSlotRequest(key: key, priority: priority)
+                slotWaiters[key, default: []].append(
+                    SlotWaiter(id: waiterID, continuation: continuation)
+                )
+                grantSlotsIfNeeded()
+            }
+        } onCancel: {
+            Task { await self.cancelSlotWait(for: key, waiterID: waiterID) }
+        }
+    }
+
+    private func enqueueSlotRequest(key: String, priority: RemoteImagePriority) {
+        if let index = slotQueue.firstIndex(where: { $0.key == key }) {
+            slotQueue[index].priority = slotQueue[index].priority.raised(to: priority)
+            slotQueue[index].sequence = nextSlotSequence()
+        } else {
+            slotQueue.append(
+                SlotRequest(key: key, priority: priority, sequence: nextSlotSequence())
+            )
+        }
+        slotQueue.sort(by: >)
+    }
+
+    private func cancelSlotWait(for key: String, waiterID: UUID) {
+        guard var waiters = slotWaiters[key],
+              let index = waiters.firstIndex(where: { $0.id == waiterID }) else { return }
+
+        let waiter = waiters.remove(at: index)
+        if waiters.isEmpty {
+            slotWaiters[key] = nil
+        } else {
+            slotWaiters[key] = waiters
+        }
+
+        if !activeSlotKeys.contains(key) {
+            slotQueue.removeAll { $0.key == key }
+        }
+
+        waiter.continuation.resume()
+    }
+
+    private func releaseSlot(key: String) {
+        activeSlotKeys.remove(key)
+        grantSlotsIfNeeded()
+    }
+
+    private func grantSlotsIfNeeded() {
+        while activeSlotKeys.count < maxConcurrentDownloads {
+            guard let index = slotQueue.firstIndex(where: { !(slotWaiters[$0.key]?.isEmpty ?? true) }) else {
+                break
+            }
+
+            let next = slotQueue.remove(at: index)
+            activeSlotKeys.insert(next.key)
+
+            let waiters = slotWaiters.removeValue(forKey: next.key) ?? []
+            for waiter in waiters {
+                waiter.continuation.resume()
+            }
+        }
+    }
+
+    private func nextSlotSequence() -> UInt64 {
+        slotSequence += 1
+        return slotSequence
+    }
+
+    private static func downloadAndDecode(
+        from url: URL,
+        maxPixelSize: Int?,
+        progressHandler: (@Sendable (Double) -> Void)?
+    ) async -> PlatformImage? {
+        do {
+            var request = URLRequest(url: url)
+            request.setValue("BooruVerse/1.0", forHTTPHeaderField: "User-Agent")
+            // Some CDNs (e.g. Gelbooru) reject hotlinked images with a 302 redirect unless a
+            // same-origin Referer is present. Harmless for hosts that don't check it.
+            if let scheme = url.scheme, let host = url.host {
+                request.setValue("\(scheme)://\(host)/", forHTTPHeaderField: "Referer")
+            }
+
+            let data: Data
+            if progressHandler == nil {
+                guard let fetched = await fetchDataWithRetry(request: request) else {
+                    return nil
+                }
+                data = fetched
+            } else {
+                guard let downloaded = await downloadWithProgress(request: request, progressHandler: progressHandler) else {
+                    return nil
+                }
+                data = downloaded
+            }
+
+            return await Task.detached(priority: .utility) {
+                Self.decodeImageData(data, maxPixelSize: maxPixelSize)
+            }.value
+        } catch is CancellationError {
+            return nil
+        } catch {
+            GalleryDebug.log("network error: \(error.localizedDescription)", url: url)
+            return nil
+        }
+    }
+
+    /// Fetches image data, retrying once on transient network errors (timeouts, dropped
+    /// connections) that commonly occur when an HTTP/3 connection stalls behind a VPN.
+    private static func fetchDataWithRetry(request: URLRequest, attempts: Int = 2) async -> Data? {
+        for attempt in 0..<attempts {
+            if Task.isCancelled { return nil }
+            do {
+                let (data, response) = try await session.data(for: request)
+                guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+                    return nil
+                }
+                return data
+            } catch is CancellationError {
+                return nil
+            } catch {
+                if Task.isCancelled { return nil }
+                if attempt < attempts - 1, isTransientNetworkError(error) {
+                    try? await Task.sleep(nanoseconds: 400_000_000)
+                    continue
+                }
+                return nil
+            }
+        }
+        return nil
+    }
+
+    private static func isTransientNetworkError(_ error: Error) -> Bool {
+        guard let urlError = error as? URLError else { return false }
+        switch urlError.code {
+        case .timedOut, .networkConnectionLost, .cannotConnectToHost,
+             .cannotFindHost, .dnsLookupFailed, .notConnectedToInternet:
+            return true
+        default:
+            return false
+        }
+    }
+
+    private static func downloadWithProgress(
+        request: URLRequest,
+        progressHandler: (@Sendable (Double) -> Void)?
+    ) async -> Data? {
+        do {
+            let (bytes, response) = try await session.bytes(for: request)
+            guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+                return nil
+            }
+
+            let expectedLength = http.expectedContentLength
+            var data = Data()
+            if expectedLength > 0 {
+                data.reserveCapacity(Int(min(expectedLength, Int64(Int.max))))
+            }
+
+            var buffer = [UInt8]()
+            buffer.reserveCapacity(65_536)
+            var lastReportedPercent = -1
+
+            for try await byte in bytes {
+                if Task.isCancelled { return nil }
+                buffer.append(byte)
+
+                if buffer.count >= 65_536 {
+                    data.append(contentsOf: buffer)
+                    buffer.removeAll(keepingCapacity: true)
+                }
+
+                if expectedLength > 0 {
+                    let totalCount = data.count + buffer.count
+                    let percent = Int(min(Double(totalCount) / Double(expectedLength), 0.99) * 100)
+                    if percent != lastReportedPercent, percent % 5 == 0 {
+                        lastReportedPercent = percent
+                        progressHandler?(Double(percent) / 100)
+                    }
+                }
+            }
+
+            if !buffer.isEmpty {
+                data.append(contentsOf: buffer)
+            }
+
+            progressHandler?(1)
+            return data
+        } catch is CancellationError {
+            return nil
+        } catch {
+            return nil
+        }
+    }
+
+    private static func decodeImageData(_ data: Data, maxPixelSize: Int?) -> PlatformImage? {
+        guard data.count > 64 else { return nil }
+
+        let sourceOptions: [CFString: Any] = [kCGImageSourceShouldCache: true]
+        guard let source = CGImageSourceCreateWithData(data as CFData, sourceOptions as CFDictionary) else {
+            return nil
+        }
+
+        let imageCount = CGImageSourceGetCount(source)
+        guard imageCount > 0 else { return nil }
+
+        // Only run the (expensive, log-spammy) thumbnail scanner when the image is actually
+        // larger than the requested size. Otherwise decode the image directly.
+        var shouldDownsample = false
+        if let maxPixelSize, maxPixelSize > 0 {
+            if let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any] {
+                let pixelWidth = properties[kCGImagePropertyPixelWidth] as? Int ?? 0
+                let pixelHeight = properties[kCGImagePropertyPixelHeight] as? Int ?? 0
+                shouldDownsample = max(pixelWidth, pixelHeight) > maxPixelSize
+            } else {
+                // Unknown dimensions: fall back to downsampling to bound memory.
+                shouldDownsample = true
+            }
+        }
+
+        // `ShouldCacheImmediately` forces ImageIO to produce a fully-decoded bitmap on this
+        // background thread, so Core Animation never has to decode lazily on the main thread
+        // at draw time (the source of scroll stutter and "cannot add handler" spam).
+        if shouldDownsample, let maxPixelSize {
+            let options: [CFString: Any] = [
+                kCGImageSourceCreateThumbnailFromImageAlways: true,
+                kCGImageSourceThumbnailMaxPixelSize: maxPixelSize,
+                kCGImageSourceCreateThumbnailWithTransform: true,
+                kCGImageSourceShouldCacheImmediately: true,
+            ]
+            if let thumbnail = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) {
+                return platformImage(from: thumbnail)
+            }
+        }
+
+        let decodeOptions: [CFString: Any] = [kCGImageSourceShouldCacheImmediately: true]
+        guard let cgImage = CGImageSourceCreateImageAtIndex(source, 0, decodeOptions as CFDictionary) else {
+            return nil
+        }
+
+        return platformImage(from: cgImage)
+    }
+
+    private static func platformImage(from cgImage: CGImage) -> PlatformImage {
+#if canImport(UIKit)
+        UIImage(cgImage: cgImage)
+#else
+        let size = NSSize(width: cgImage.width, height: cgImage.height)
+        return NSImage(cgImage: cgImage, size: size)
+#endif
+    }
+
+    private static func cacheCost(for image: PlatformImage) -> Int {
+#if canImport(UIKit)
+        guard let cgImage = image.cgImage else { return 1 }
+        return cgImage.bytesPerRow * cgImage.height
+#else
+        guard let tiff = image.tiffRepresentation else { return 1 }
+        return tiff.count
+#endif
+    }
+
+    private final class CacheBox: NSObject {
+        let image: PlatformImage
+        init(image: PlatformImage) { self.image = image }
+    }
+}
+
+extension PlatformImage {
+    var swiftUIImage: Image {
+#if canImport(UIKit)
+        Image(uiImage: self)
+#else
+        Image(nsImage: self)
+#endif
+    }
+}
+
+extension BooruPost {
+    var aspectRatio: CGFloat {
+        guard width > 0, height > 0 else { return 1 }
+        return CGFloat(width) / CGFloat(height)
+    }
+}
+
+enum RemoteImageLoaderBridge {
+    static var defaultThumbnailPixelSize: Int { RemoteImageLoaderDefaults.thumbnailPixelSize }
+
+    static func cachedImage(for url: URL?, maxPixelSize: Int? = nil) async -> PlatformImage? {
+        await RemoteImageLoader.shared.cachedImage(for: url, maxPixelSize: maxPixelSize)
+    }
+
+    static func load(
+        url: URL,
+        priority: RemoteImagePriority = .visible,
+        maxPixelSize: Int? = nil,
+        progress: (@Sendable (Double) -> Void)? = nil
+    ) async -> PlatformImage? {
+        await RemoteImageLoader.shared.load(
+            url: url,
+            priority: priority,
+            maxPixelSize: maxPixelSize,
+            progressHandler: progress
+        )
+    }
+
+    nonisolated static func prefetch(
+        _ url: URL?,
+        priority: RemoteImagePriority = .background,
+        maxPixelSize: Int? = RemoteImageLoaderDefaults.thumbnailPixelSize
+    ) {
+        RemoteImageLoader.shared.prefetch(url, priority: priority, maxPixelSize: maxPixelSize)
+    }
+
+    nonisolated static func boostPriority(
+        for url: URL?,
+        to priority: RemoteImagePriority = .visible,
+        maxPixelSize: Int? = RemoteImageLoaderDefaults.thumbnailPixelSize
+    ) {
+        guard let url else { return }
+        Task {
+            await RemoteImageLoader.shared.boostPriority(for: url, to: priority, maxPixelSize: maxPixelSize)
+        }
+    }
+}
