@@ -1,6 +1,6 @@
 import Foundation
 
-private struct MoebooruPostDTO: Decodable {
+nonisolated private struct MoebooruPostDTO: Decodable {
     let id: Int
     let md5: String
     let tags: String
@@ -13,6 +13,7 @@ private struct MoebooruPostDTO: Decodable {
     let fileUrl: String?
     let fileExt: String?
     let source: String?
+    let createdAt: FlexibleAPIDate?
 
     func toModel(serverID: String) -> BooruPost {
         BooruPost(
@@ -28,12 +29,13 @@ private struct MoebooruPostDTO: Decodable {
             sampleURL: sampleUrl.flatMap(URL.init(string:)),
             fileURL: fileUrl.flatMap(URL.init(string:)),
             fileExt: fileExt ?? "",
-            sourceURL: source.flatMap(URL.init(string:))
+            sourceURL: source.flatMap(URL.init(string:)),
+            createdAt: createdAt?.date
         )
     }
 }
 
-private struct MoebooruPoolDTO: Decodable {
+nonisolated private struct MoebooruPoolDTO: Decodable {
     let id: Int
     let name: String
     let postCount: Int?
@@ -50,11 +52,11 @@ private struct MoebooruPoolDTO: Decodable {
     }
 }
 
-private struct MoebooruPoolShowDTO: Decodable {
+nonisolated private struct MoebooruPoolShowDTO: Decodable {
     let posts: [MoebooruPostDTO]
 }
 
-private struct MoebooruTagDTO: Decodable {
+nonisolated private struct MoebooruTagDTO: Decodable {
     let id: Int
     let name: String
     let count: Int
@@ -71,7 +73,7 @@ private struct MoebooruTagDTO: Decodable {
 }
 
 /// Moebooru / Danbooru 1.13.x client — see https://yande.re/help/api
-struct MoebooruClient: BooruBrowsing, BooruPools, BooruPopular {
+nonisolated struct MoebooruClient: BooruBrowsing, BooruPools, BooruPopular {
     let baseURL: URL
     let siteID: String
 

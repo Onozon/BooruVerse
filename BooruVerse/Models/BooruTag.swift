@@ -1,7 +1,7 @@
 import Foundation
 import SwiftUI
 
-struct BooruTag: Identifiable, Hashable, Sendable {
+nonisolated struct BooruTag: Identifiable, Hashable, Sendable {
     let id: String
     let name: String
     let postCount: Int
@@ -15,7 +15,7 @@ struct BooruTag: Identifiable, Hashable, Sendable {
     }
 }
 
-struct BooruTagGroup: Identifiable, Sendable {
+nonisolated struct BooruTagGroup: Identifiable, Sendable {
     let type: BooruTagType
     let tags: [BooruTag]
 
@@ -38,7 +38,7 @@ extension Array where Element == BooruTag {
     }
 }
 
-enum BooruTagType: Int, Sendable, CaseIterable {
+nonisolated enum BooruTagType: Int, Sendable, CaseIterable {
     case general = 0
     case artist = 1
     case copyright = 3

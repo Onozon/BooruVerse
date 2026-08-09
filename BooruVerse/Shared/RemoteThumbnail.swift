@@ -69,14 +69,16 @@ struct RemoteThumbnail: View {
     }
 }
 
-/// Compact gallery: show preview immediately, then upgrade on-screen cells to viewer/sample.
-/// Scrolling away cancels the in-flight full-res download (preview stays).
+/// Compact gallery: show preview immediately, then upgrade on-screen cells to a capped feed-full size.
+/// Scrolling away cancels the in-flight upgrade (preview stays).
 struct ProgressiveRemoteImage: View {
     let previewURL: URL?
     let viewerURL: URL?
     var upgradesToViewer = false
     var contentMode: ContentMode = .fit
     var previewMaxPixelSize: Int? = RemoteImageLoaderDefaults.thumbnailPixelSize
+    /// Decode cap for compact-feed upgrades (not true original / gallery full-res).
+    var feedFullMaxPixelSize: Int? = RemoteImageLoaderDefaults.feedFullPixelSize
 
     @State private var image: Image?
     @State private var failed = false
@@ -109,34 +111,40 @@ struct ProgressiveRemoteImage: View {
     private var loadTaskID: String {
         let preview = previewURL?.absoluteString ?? "nil"
         let viewer = viewerURL?.absoluteString ?? "nil"
-        return "\(preview)|\(viewer)|upgrade=\(upgradesToViewer)"
+        return "\(preview)|\(viewer)|upgrade=\(upgradesToViewer)|full=\(feedFullMaxPixelSize.map(String.init) ?? "nil")"
     }
 
     private func loadPipeline() async {
         failed = false
         hasViewerQuality = false
 
-        // Prefer cached viewer quality when reappearing on screen.
+        // Prefer cached feed-full quality when reappearing on screen.
         if upgradesToViewer,
            let viewerURL,
-           let cachedViewer = await RemoteImageLoaderBridge.cachedImage(for: viewerURL, maxPixelSize: nil)
+           let cachedViewer = await RemoteImageLoaderBridge.cachedImage(
+               for: viewerURL,
+               maxPixelSize: feedFullMaxPixelSize
+           )
         {
             image = cachedViewer.swiftUIImage
             hasViewerQuality = true
             return
         }
 
-        await loadPreview()
+        let previewOK = await loadPreview()
         guard !Task.isCancelled else { return }
-        guard upgradesToViewer else { return }
+        // Only upgrade after a successful preview — avoids racing full-quality on fast networks
+        // while the user is still scrolling past unloaded cells.
+        guard upgradesToViewer, previewOK else { return }
 
         await loadViewerUpgrade()
     }
 
-    private func loadPreview() async {
+    @discardableResult
+    private func loadPreview() async -> Bool {
         guard let previewURL else {
             if image == nil { failed = true }
-            return
+            return false
         }
 
         if let cached = await RemoteImageLoaderBridge.cachedImage(
@@ -146,7 +154,7 @@ struct ProgressiveRemoteImage: View {
             if !hasViewerQuality {
                 image = cached.swiftUIImage
             }
-            return
+            return true
         }
 
         RemoteImageLoaderBridge.boostPriority(for: previewURL, maxPixelSize: previewMaxPixelSize)
@@ -158,9 +166,13 @@ struct ProgressiveRemoteImage: View {
             if !hasViewerQuality {
                 image = loaded.swiftUIImage
             }
-        } else if image == nil {
+            return true
+        }
+
+        if image == nil {
             failed = true
         }
+        return false
     }
 
     private func loadViewerUpgrade() async {
@@ -169,19 +181,21 @@ struct ProgressiveRemoteImage: View {
             return
         }
 
-        if let cached = await RemoteImageLoaderBridge.cachedImage(for: viewerURL, maxPixelSize: nil) {
+        if let cached = await RemoteImageLoaderBridge.cachedImage(
+            for: viewerURL,
+            maxPixelSize: feedFullMaxPixelSize
+        ) {
             image = cached.swiftUIImage
             hasViewerQuality = true
             return
         }
 
-        RemoteImageLoaderBridge.boostPriority(for: viewerURL, maxPixelSize: nil)
-        // Cancelling this task (cell scrolled off) cancels the full-res download when no
-        // other waiter remains — same slot/priority machinery as preview thumbs.
+        RemoteImageLoaderBridge.boostPriority(for: viewerURL, maxPixelSize: feedFullMaxPixelSize)
+        // Cancelling this task (cell scrolled off) cancels the upgrade when no other waiter remains.
         if let loaded = await RemoteImageLoaderBridge.load(
             url: viewerURL,
             priority: .visible,
-            maxPixelSize: nil
+            maxPixelSize: feedFullMaxPixelSize
         ) {
             guard !Task.isCancelled else { return }
             image = loaded.swiftUIImage

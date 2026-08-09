@@ -8,6 +8,7 @@ struct SearchSidebarView: View {
 
     @State private var showSaveDialog = false
     @State private var saveSetName = ""
+    @State private var addSaveToPersonal = false
     @State private var showSavedSetsSheet = false
 
     var body: some View {
@@ -42,17 +43,23 @@ struct SearchSidebarView: View {
                 )
 #endif
         }
-        .alert("Save Tag Set", isPresented: $showSaveDialog) {
-            TextField("Name", text: $saveSetName)
-            Button("Save") {
-                model.saveCurrentTagSet(named: saveSetName)
-                saveSetName = ""
-            }
-            Button("Cancel", role: .cancel) {
-                saveSetName = ""
-            }
-        } message: {
-            Text("Save the current \(model.tagQuery.tags.count) tags as a preset.")
+        .sheet(isPresented: $showSaveDialog) {
+            SaveTagSetSheet(
+                name: $saveSetName,
+                addToPersonal: $addSaveToPersonal,
+                tagCount: model.tagQuery.tags.count,
+                onSave: {
+                    model.saveCurrentTagSet(named: saveSetName, addToPersonal: addSaveToPersonal)
+                    saveSetName = ""
+                    addSaveToPersonal = false
+                    showSaveDialog = false
+                },
+                onCancel: {
+                    saveSetName = ""
+                    addSaveToPersonal = false
+                    showSaveDialog = false
+                }
+            )
         }
     }
 
@@ -149,30 +156,7 @@ struct SearchSidebarView: View {
     }
 
     private var pageTagsSectionHeader: some View {
-        VStack(spacing: 0) {
-            HStack(spacing: 8) {
-                Text("Tags on this page")
-                    .font(.headline)
-
-                if model.isResolvingPageTagColors {
-                    ProgressView()
-                        .controlSize(.small)
-                }
-
-                Spacer()
-
-                if !model.pageTags.isEmpty {
-                    Text("\(model.pageTags.count)")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            }
-            .padding(.vertical, 8)
-
-            Divider()
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.background)
+        PageTagsSectionHeader(chrome: model.tagChrome)
     }
 
     @ViewBuilder
@@ -191,24 +175,14 @@ struct SearchSidebarView: View {
         }
     }
 
-    @ViewBuilder
     private var pageTagsSectionBody: some View {
-        if model.pageTags.isEmpty {
-            Text(model.isLoading ? "Loading…" : "No tags yet")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.bottom, 12)
-        } else {
-            LazyVStack(alignment: .leading, spacing: 10) {
-                ForEach(model.pageTagGroups) { group in
-                    PageTagGroupSection(group: group) { tag in
-                        Task { await model.addTag(tag.name) }
-                    }
-                }
+        PageTagsSectionBody(
+            chrome: model.tagChrome,
+            isLoading: model.isLoading,
+            onAddTag: { name in
+                Task { await model.addTag(name) }
             }
-            .padding(.bottom, 12)
-        }
+        )
     }
 
     private var searchHeader: some View {
@@ -230,6 +204,7 @@ struct SearchSidebarView: View {
 
             Button {
                 saveSetName = defaultSaveName()
+                addSaveToPersonal = false
                 showSaveDialog = true
             } label: {
                 Image(systemName: "square.and.arrow.down")
@@ -283,6 +258,9 @@ private struct TagChipFlow: View {
     let onRemove: (String) -> Void
 
     var body: some View {
+        @Bindable var chrome = model.tagChrome
+        let _ = chrome.tagIndexRevision
+
         FlowLayout(spacing: 7) {
             ForEach(model.tagQuery.tags, id: \.self) { tag in
                 TagChip(
@@ -303,6 +281,62 @@ private struct TagChipFlow: View {
         }
         .onChange(of: model.tagQuery.tags) { _, tags in
             model.resolveTagNames(tags)
+        }
+    }
+}
+
+private struct PageTagsSectionHeader: View {
+    @Bindable var chrome: PageTagChrome
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 8) {
+                Text("Tags on this page")
+                    .font(.headline)
+
+                if chrome.isResolvingPageTagColors {
+                    ProgressView()
+                        .controlSize(.small)
+                }
+
+                Spacer()
+
+                if !chrome.pageTags.isEmpty {
+                    Text("\(chrome.pageTags.count)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .padding(.vertical, 8)
+
+            Divider()
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.background)
+    }
+}
+
+private struct PageTagsSectionBody: View {
+    @Bindable var chrome: PageTagChrome
+    let isLoading: Bool
+    let onAddTag: (String) -> Void
+
+    var body: some View {
+        if chrome.pageTags.isEmpty {
+            Text(isLoading ? "Loading…" : "No tags yet")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.bottom, 12)
+        } else {
+            LazyVStack(alignment: .leading, spacing: 10) {
+                ForEach(chrome.pageTagGroups) { group in
+                    PageTagGroupSection(group: group) { tag in
+                        onAddTag(tag.name)
+                    }
+                }
+            }
+            .padding(.bottom, 12)
         }
     }
 }

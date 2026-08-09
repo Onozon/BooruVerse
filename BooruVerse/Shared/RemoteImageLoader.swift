@@ -24,8 +24,15 @@ enum RemoteImagePriority: Int, Sendable, Comparable {
     }
 }
 
-enum RemoteImageLoaderDefaults {
+nonisolated enum RemoteImageLoaderDefaults {
+    /// Grid / compact preview decode size.
     static let thumbnailPixelSize = 480
+    /// Compact-feed upgrade size (viewer URL, but capped so fewer huge bitmaps stay resident).
+    static let feedFullPixelSize = 1_600
+    static let previewCacheCountLimit = 360
+    static let previewCacheCostLimit = 64 * 1024 * 1024
+    static let fullCacheCountLimit = 48
+    static let fullCacheCostLimit = 48 * 1024 * 1024
 }
 
 actor RemoteImageLoader {
@@ -42,10 +49,19 @@ actor RemoteImageLoader {
         return URLSession(configuration: config)
     }()
 
-    private let cache: NSCache<NSString, CacheBox> = {
+    /// Preview / thumbnail bitmaps (many, smaller).
+    private let previewCache: NSCache<NSString, CacheBox> = {
         let cache = NSCache<NSString, CacheBox>()
-        cache.countLimit = 400
-        cache.totalCostLimit = 96 * 1024 * 1024
+        cache.countLimit = RemoteImageLoaderDefaults.previewCacheCountLimit
+        cache.totalCostLimit = RemoteImageLoaderDefaults.previewCacheCostLimit
+        return cache
+    }()
+
+    /// Full / feed-upgrade bitmaps (fewer, larger).
+    private let fullCache: NSCache<NSString, CacheBox> = {
+        let cache = NSCache<NSString, CacheBox>()
+        cache.countLimit = RemoteImageLoaderDefaults.fullCacheCountLimit
+        cache.totalCostLimit = RemoteImageLoaderDefaults.fullCacheCostLimit
         return cache
     }()
 
@@ -85,12 +101,29 @@ actor RemoteImageLoader {
 
     func evict(url: URL?) {
         guard let url else { return }
-        cache.removeObject(forKey: url.absoluteString as NSString)
+        let fullKey = cacheKey(for: url, maxPixelSize: nil)
+        fullCache.removeObject(forKey: fullKey)
+        previewCache.removeObject(forKey: cacheKey(for: url, maxPixelSize: RemoteImageLoaderDefaults.thumbnailPixelSize))
+        previewCache.removeObject(forKey: cacheKey(for: url, maxPixelSize: RemoteImageLoaderDefaults.feedFullPixelSize))
+        previewCache.removeObject(forKey: fullKey)
+    }
+
+    /// Drops decoded bitmaps so inactive tabs don't keep thumbnails resident.
+    /// In-flight downloads and URLCache are left alone — reload is cheap from disk/network cache.
+    func purgeDecodedImages() {
+        previewCache.removeAllObjects()
+        fullCache.removeAllObjects()
+        GalleryDebug.log("purged decoded image cache")
     }
 
     func cachedImage(for url: URL?, maxPixelSize: Int? = nil) -> PlatformImage? {
         guard let url else { return nil }
-        return cache.object(forKey: cacheKey(for: url, maxPixelSize: maxPixelSize))?.image
+        let key = cacheKey(for: url, maxPixelSize: maxPixelSize)
+        if isFullQuality(maxPixelSize) {
+            return fullCache.object(forKey: key)?.image
+                ?? previewCache.object(forKey: key)?.image
+        }
+        return previewCache.object(forKey: key)?.image
     }
 
     nonisolated func prefetch(_ url: URL?, priority: RemoteImagePriority = .background, maxPixelSize: Int? = RemoteImageLoaderDefaults.thumbnailPixelSize) {
@@ -132,16 +165,16 @@ actor RemoteImageLoader {
         let key = taskKey(for: url, maxPixelSize: maxPixelSize)
         let storageKey = cacheKey(for: url, maxPixelSize: maxPixelSize)
 
-        if let cached = cache.object(forKey: storageKey)?.image {
+        if let cached = cachedImage(for: url, maxPixelSize: maxPixelSize) {
             GalleryDebug.log("cache hit", url: url)
             return cached
         }
 
         let waiterID = UUID()
         registerLoadWaiter(key: key, id: waiterID)
-        // Full-res (viewer) loads are cancelled when the last waiter scrolls away.
-        // Preview thumbs keep finishing in the background so scroll-back stays snappy.
-        let cancelWhenAbandoned = maxPixelSize == nil
+        // Full / feed-upgrade loads cancel when the last waiter scrolls away.
+        // Small preview thumbs finish in the background so scroll-back stays snappy.
+        let cancelWhenAbandoned = isFullQuality(maxPixelSize)
 
         return await withTaskCancellationHandler {
             let result = await self.awaitDownload(
@@ -152,7 +185,7 @@ actor RemoteImageLoader {
                 maxPixelSize: maxPixelSize,
                 progressHandler: progressHandler
             )
-            await self.unregisterLoadWaiter(key: key, id: waiterID, cancelIfAbandoned: false)
+            self.unregisterLoadWaiter(key: key, id: waiterID, cancelIfAbandoned: false)
             return result
         } onCancel: {
             Task {
@@ -173,7 +206,7 @@ actor RemoteImageLoader {
         maxPixelSize: Int?,
         progressHandler: (@Sendable (Double) -> Void)?
     ) async -> PlatformImage? {
-        if let cached = cache.object(forKey: storageKey)?.image {
+        if let cached = cachedImage(for: url, maxPixelSize: maxPixelSize) {
             GalleryDebug.log("cache hit", url: url)
             return cached
         }
@@ -202,7 +235,7 @@ actor RemoteImageLoader {
         }
 
         if let result {
-            store(result, forKey: storageKey)
+            store(result, forKey: storageKey, maxPixelSize: maxPixelSize)
             GalleryDebug.log("download ok", url: url)
         } else if Task.isCancelled {
             GalleryDebug.log("download cancelled", url: url)
@@ -250,7 +283,7 @@ actor RemoteImageLoader {
 
         if Task.isCancelled { return nil }
 
-        if let cached = cache.object(forKey: storageKey)?.image {
+        if let cached = cachedImage(for: url, maxPixelSize: maxPixelSize) {
             return cached
         }
 
@@ -262,8 +295,18 @@ actor RemoteImageLoader {
         )
     }
 
-    private func store(_ image: PlatformImage, forKey key: NSString) {
-        cache.setObject(CacheBox(image: image), forKey: key, cost: Self.cacheCost(for: image))
+    private func store(_ image: PlatformImage, forKey key: NSString, maxPixelSize: Int?) {
+        let box = CacheBox(image: image)
+        let cost = Self.cacheCost(for: image)
+        if isFullQuality(maxPixelSize) {
+            fullCache.setObject(box, forKey: key, cost: cost)
+        } else {
+            previewCache.setObject(box, forKey: key, cost: cost)
+        }
+    }
+
+    private func isFullQuality(_ maxPixelSize: Int?) -> Bool {
+        maxPixelSize == nil || maxPixelSize == RemoteImageLoaderDefaults.feedFullPixelSize
     }
 
     private func cacheKey(for url: URL, maxPixelSize: Int?) -> NSString {
@@ -364,37 +407,30 @@ actor RemoteImageLoader {
         maxPixelSize: Int?,
         progressHandler: (@Sendable (Double) -> Void)?
     ) async -> PlatformImage? {
-        do {
-            var request = URLRequest(url: url)
-            request.setValue("BooruVerse/1.0", forHTTPHeaderField: "User-Agent")
-            // Some CDNs (e.g. Gelbooru) reject hotlinked images with a 302 redirect unless a
-            // same-origin Referer is present. Harmless for hosts that don't check it.
-            if let scheme = url.scheme, let host = url.host {
-                request.setValue("\(scheme)://\(host)/", forHTTPHeaderField: "Referer")
-            }
-
-            let data: Data
-            if progressHandler == nil {
-                guard let fetched = await fetchDataWithRetry(request: request) else {
-                    return nil
-                }
-                data = fetched
-            } else {
-                guard let downloaded = await downloadWithProgress(request: request, progressHandler: progressHandler) else {
-                    return nil
-                }
-                data = downloaded
-            }
-
-            return await Task.detached(priority: .utility) {
-                Self.decodeImageData(data, maxPixelSize: maxPixelSize)
-            }.value
-        } catch is CancellationError {
-            return nil
-        } catch {
-            GalleryDebug.log("network error: \(error.localizedDescription)", url: url)
-            return nil
+        var request = URLRequest(url: url)
+        request.setValue("BooruVerse/1.0", forHTTPHeaderField: "User-Agent")
+        // Some CDNs (e.g. Gelbooru) reject hotlinked images with a 302 redirect unless a
+        // same-origin Referer is present. Harmless for hosts that don't check it.
+        if let scheme = url.scheme, let host = url.host {
+            request.setValue("\(scheme)://\(host)/", forHTTPHeaderField: "Referer")
         }
+
+        let data: Data
+        if progressHandler == nil {
+            guard let fetched = await fetchDataWithRetry(request: request) else {
+                return nil
+            }
+            data = fetched
+        } else {
+            guard let downloaded = await downloadWithProgress(request: request, progressHandler: progressHandler) else {
+                return nil
+            }
+            data = downloaded
+        }
+
+        return await Task.detached(priority: .utility) {
+            Self.decodeImageData(data, maxPixelSize: maxPixelSize)
+        }.value
     }
 
     /// Fetches image data, retrying once on transient network errors (timeouts, dropped
@@ -557,6 +593,12 @@ enum RemoteImageLoaderBridge {
 
     static func cachedImage(for url: URL?, maxPixelSize: Int? = nil) async -> PlatformImage? {
         await RemoteImageLoader.shared.cachedImage(for: url, maxPixelSize: maxPixelSize)
+    }
+
+    nonisolated static func purgeDecodedImages() {
+        Task {
+            await RemoteImageLoader.shared.purgeDecodedImages()
+        }
     }
 
     static func load(

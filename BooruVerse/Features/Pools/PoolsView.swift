@@ -3,9 +3,11 @@ import SwiftUI
 struct PoolsView: View {
     @State private var model: PoolsViewModel
     @Environment(ServerStore.self) private var serverStore
+    var isActive = true
 
-    init(sites: [any BooruSite & BooruBrowsing]) {
+    init(sites: [any BooruSite & BooruBrowsing], isActive: Bool = true) {
         _model = State(initialValue: PoolsViewModel(servers: sites))
+        self.isActive = isActive
     }
 
     private func serverColor(for pool: BooruPool) -> Color? {
@@ -18,21 +20,22 @@ struct PoolsView: View {
 
         NavigationStack {
             content
+#if os(macOS)
+                .navigationTitle("")
+#else
                 .navigationTitle("Pools")
+#endif
                 .navigationDestination(for: BooruPool.self) { pool in
                     if let site = model.site(for: pool) {
                         PoolDetailView(pool: pool, site: site)
                     }
                 }
-                .searchable(text: $model.searchText, prompt: "Search pools")
-                .onSubmit(of: .search) {
-                    Task { await model.search() }
-                }
-                .onChange(of: model.searchText) { _, newValue in
-                    if newValue.isEmpty {
-                        Task { await model.search() }
-                    }
-                }
+                .modifier(PoolsSearchModifier(
+                    isActive: isActive,
+                    searchText: $model.searchText,
+                    onSubmit: { Task { await model.search() } },
+                    onClear: { Task { await model.search() } }
+                ))
         }
         .task {
             await model.bootstrapIfNeeded()
@@ -209,6 +212,27 @@ private struct PoolPreviewThumb: View {
             image = loaded.swiftUIImage
         } else if image == nil {
             failed = true
+        }
+    }
+}
+
+/// Applies searchable only while the Pools tab is active (avoids leaking into other tabs).
+private struct PoolsSearchModifier: ViewModifier {
+    let isActive: Bool
+    @Binding var searchText: String
+    let onSubmit: () -> Void
+    let onClear: () -> Void
+
+    func body(content: Content) -> some View {
+        if isActive {
+            content
+                .searchable(text: $searchText, prompt: "Search pools")
+                .onSubmit(of: .search, onSubmit)
+                .onChange(of: searchText) { _, newValue in
+                    if newValue.isEmpty { onClear() }
+                }
+        } else {
+            content
         }
     }
 }

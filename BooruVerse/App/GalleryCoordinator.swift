@@ -7,6 +7,8 @@ final class GalleryCoordinator {
     private(set) var posts: [BooruPost] = []
     /// Globally-unique post identity (`BooruPost.globalID`).
     private(set) var selectedPostID: String?
+    /// Survives `dismiss()` so the grid can scroll to the last viewed post.
+    private(set) var returnPostID: String?
 
     var isPresented: Bool {
         model != nil && selectedPostID != nil
@@ -17,9 +19,11 @@ final class GalleryCoordinator {
         self.model = model
         posts = model.posts
         selectedPostID = postID
+        returnPostID = postID
     }
 
     func dismiss() {
+        returnPostID = selectedPostID ?? returnPostID
         model = nil
         selectedPostID = nil
         posts = []
@@ -28,6 +32,7 @@ final class GalleryCoordinator {
     func setSelectedPostID(_ postID: String) {
         guard posts.contains(where: { $0.globalID == postID }) else { return }
         selectedPostID = postID
+        returnPostID = postID
     }
 
     func syncFromModel() {
@@ -40,5 +45,10 @@ final class GalleryCoordinator {
 
     func isOpen(for model: BrowseViewModel) -> Bool {
         self.model === model
+    }
+
+    func consumeReturnPostID() -> String? {
+        defer { returnPostID = nil }
+        return returnPostID
     }
 }

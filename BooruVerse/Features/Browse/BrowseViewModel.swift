@@ -20,8 +20,10 @@ final class BrowseViewModel {
     /// Pool identifier when `mode == .pool`.
     let poolID: Int?
 
-    /// Selected period when `mode == .popular`.
+    /// Selected period when `mode == .popular` and channel is a popular window.
     private(set) var popularPeriod: PopularPeriod = .day
+    /// Feed capsule selection (Personal / Day / Week / Month). Used when `mode == .popular`.
+    private(set) var feedChannel: FeedChannel = .day
 
     var tagQuery = TagQuery()
     /// Everything fetched from the servers, before the rating filter is applied.
@@ -32,11 +34,10 @@ final class BrowseViewModel {
         guard filter != .all else { return allPosts }
         return allPosts.filter { filter.allows($0.rating) }
     }
-    var pageTags: [BooruTag] = []
+    /// Tag sidebar state — separate observable so resolve/refresh does not redraw the grid.
+    @ObservationIgnored
+    let tagChrome = PageTagChrome()
 
-    var pageTagGroups: [BooruTagGroup] {
-        pageTags.groupedByType
-    }
     var suggestions: [BooruTag] = []
     var inputFragment = ""
 
@@ -49,20 +50,28 @@ final class BrowseViewModel {
     var isSearchingSuggestions = false
     var errorMessage: String?
 
-    private(set) var tagIndexRevision = 0
-    private(set) var pageTagsRevision = 0
-
     private var postsLoadGeneration = 0
     private(set) var listGeneration = 0
 
-    private(set) var isResolvingPageTagColors = false
     private(set) var favoritesRevision = 0
+
+    // Compatibility shims for call sites that still read tag chrome via the VM.
+    var pageTags: [BooruTag] {
+        get { tagChrome.pageTags }
+        set { tagChrome.replacePageTags(newValue) }
+    }
+    var pageTagGroups: [BooruTagGroup] { tagChrome.pageTagGroups }
+    var tagIndexRevision: Int { tagChrome.tagIndexRevision }
+    var pageTagsRevision: Int { tagChrome.pageTagsRevision }
+    var isResolvingPageTagColors: Bool { tagChrome.isResolvingPageTagColors }
 
     private var hasBootstrapped = false
     private var loadedPostIDs: Set<String> = []
 
     /// Browse pagination fan-out.
     private var browseAggregator: PostFeedAggregator?
+    /// Personal feed: one multi-server cursor per selected tag set.
+    private var personalAggregator: PersonalFeedAggregator?
     /// Interleaved (server, native id) favorite targets for favorites mode.
     private var favoritePairs: [(server: any BooruSite & BooruBrowsing, id: Int)] = []
 
@@ -98,7 +107,7 @@ final class BrowseViewModel {
         for server in servers {
             TagIndexStore.shared.loadCache(siteID: server.siteID)
         }
-        tagIndexRevision += 1
+        tagChrome.bumpTagIndexRevision()
     }
 
     /// Loads data once per view-model lifetime. Safe to call from `.task` on tab switches.
@@ -116,7 +125,7 @@ final class BrowseViewModel {
     }
 
     func postTagGroups(for post: BooruPost) -> [BooruTagGroup] {
-        _ = tagIndexRevision
+        _ = tagChrome.tagIndexRevision
         let tags = post.tags.map { name in
             BooruTag(
                 name: name,
@@ -146,14 +155,14 @@ final class BrowseViewModel {
                 site: server,
                 siteID: server.siteID
             ) {
-                self.tagIndexRevision += 1
+                self.tagChrome.bumpTagIndexRevision()
             }
         }
     }
 
     /// Best-known type for a tag across all enabled servers, preferring a specific (non-general) type.
     func tagType(for name: String) -> BooruTagType {
-        _ = tagIndexRevision
+        _ = tagChrome.tagIndexRevision
         for server in servers {
             if let type = TagIndexStore.shared.type(for: name, siteID: server.siteID), type != .general {
                 return type
@@ -202,13 +211,35 @@ final class BrowseViewModel {
         case .pool:
             await fetchPoolPage(append: true)
         case .popular:
-            await fetchPopularPage(append: true)
+            if feedChannel == .personal {
+                await fetchPersonalPage(append: true)
+            } else {
+                await fetchPopularPage(append: true)
+            }
         }
     }
 
     func setPopularPeriod(_ period: PopularPeriod) async {
-        guard mode == .popular, period != popularPeriod else { return }
-        popularPeriod = period
+        await setFeedChannel(FeedChannel(period: period))
+    }
+
+    /// Sets channel without reloading (used when restoring a persisted session).
+    func applyFeedChannel(_ channel: FeedChannel) {
+        feedChannel = channel
+        if let period = channel.popularPeriod {
+            popularPeriod = period
+        }
+    }
+
+    func setFeedChannel(_ channel: FeedChannel) async {
+        guard mode == .popular, channel != feedChannel else { return }
+        applyFeedChannel(channel)
+        await resetAndLoadFirstPage()
+    }
+
+    /// Reload Personal when the selected tag sets change.
+    func reloadPersonalFeedIfNeeded() async {
+        guard mode == .popular, feedChannel == .personal else { return }
         await resetAndLoadFirstPage()
     }
 
@@ -280,7 +311,26 @@ final class BrowseViewModel {
         case .pool:
             await fetchPoolPage(append: false)
         case .popular:
-            await fetchPopularPage(append: false)
+            if feedChannel == .personal {
+                let tagSets = PersonalFeedStore.shared.personalSets.map(\.tags)
+                if tagSets.isEmpty {
+                    personalAggregator = nil
+                    allPosts = []
+                    loadedPostIDs = []
+                    hasMorePages = false
+                    updatePageTagsForVisiblePage()
+                    return
+                }
+                personalAggregator = PersonalFeedAggregator(
+                    tagSets: tagSets,
+                    clients: servers,
+                    perServerLimit: Self.perServerLimit
+                )
+                await fetchPersonalPage(append: false)
+            } else {
+                personalAggregator = nil
+                await fetchPopularPage(append: false)
+            }
         }
         updatePageTagsForVisiblePage()
     }
@@ -308,6 +358,7 @@ final class BrowseViewModel {
             appendPosts(fetched, isInitial: isInitial)
             loadedThroughPage += 1
             hasMorePages = aggregator.hasMore
+            await fillFilteredPostsIfNeeded()
         } catch is CancellationError {
             return
         } catch let urlError as URLError where urlError.code == .cancelled {
@@ -339,6 +390,7 @@ final class BrowseViewModel {
             appendPosts(fetched, isInitial: isInitial)
             loadedThroughPage = pageToLoad
             hasMorePages = !fetched.isEmpty
+            await fillFilteredPostsIfNeeded()
         } catch is CancellationError {
             return
         } catch let urlError as URLError where urlError.code == .cancelled {
@@ -367,27 +419,78 @@ final class BrowseViewModel {
 
         do {
             var byServer: [Int: [BooruPost]] = [:]
-            try await withThrowingTaskGroup(of: (Int, [BooruPost]).self) { group in
+            var failureCount = 0
+            try await withThrowingTaskGroup(of: (Int, [BooruPost]?).self) { group in
                 for (index, server) in popularServers.enumerated() {
                     group.addTask {
-                        let posts = (try? await server.fetchPopular(period: period)) ?? []
-                        return (index, posts)
+                        do {
+                            return (index, try await server.fetchPopular(period: period))
+                        } catch is CancellationError {
+                            throw CancellationError()
+                        } catch let urlError as URLError where urlError.code == .cancelled {
+                            throw CancellationError()
+                        } catch {
+                            return (index, nil)
+                        }
                     }
                 }
                 for try await (index, posts) in group {
-                    byServer[index] = posts
+                    if let posts {
+                        byServer[index] = posts
+                    } else {
+                        failureCount += 1
+                    }
                 }
             }
             guard generation == postsLoadGeneration else { return }
+
+            if byServer.isEmpty, failureCount > 0 {
+                throw PostFeedAggregatorError.allServersFailed
+            }
 
             let merged = Self.interleave(byServer, order: Array(popularServers.indices))
             appendPosts(merged, isInitial: true)
             loadedThroughPage = 1
             hasMorePages = false
+            await fillFilteredPostsIfNeeded()
         } catch is CancellationError {
             return
         } catch {
             handleFetchError(error, generation: generation, isInitial: true)
+        }
+    }
+
+    private func fetchPersonalPage(append: Bool) async {
+        guard let aggregator = personalAggregator else {
+            hasMorePages = false
+            return
+        }
+        guard aggregator.hasMore else {
+            hasMorePages = false
+            return
+        }
+
+        let generation = postsLoadGeneration
+        let isInitial = !append && posts.isEmpty
+        setLoading(isInitial: isInitial, true)
+        defer { setLoading(isInitial: isInitial, false) }
+
+        let ratingFilter = AppSettingsStore.shared.ratingFilter
+        do {
+            let fetched = try await aggregator.loadNextPage(ratingFilter: ratingFilter) { base, filter, flavor in
+                Self.query(base, withRating: filter, flavor: flavor)
+            }
+            guard generation == postsLoadGeneration else { return }
+            appendPosts(fetched, isInitial: isInitial, resortByDate: true)
+            loadedThroughPage += 1
+            hasMorePages = aggregator.hasMore
+            await fillFilteredPostsIfNeeded()
+        } catch is CancellationError {
+            return
+        } catch let urlError as URLError where urlError.code == .cancelled {
+            return
+        } catch {
+            handleFetchError(error, generation: generation, isInitial: isInitial)
         }
     }
 
@@ -456,13 +559,16 @@ final class BrowseViewModel {
         favoritePairs = pairs
     }
 
-    private func appendPosts(_ fetched: [BooruPost], isInitial: Bool) {
+    private func appendPosts(_ fetched: [BooruPost], isInitial: Bool, resortByDate: Bool = false) {
         if isInitial {
             allPosts = fetched
             loadedPostIDs = Set(fetched.map(\.globalID))
         } else {
             let unique = fetched.filter { loadedPostIDs.insert($0.globalID).inserted }
             allPosts.append(contentsOf: unique)
+        }
+        if resortByDate {
+            allPosts.sort(by: PersonalFeedAggregator.recencySort)
         }
     }
 
@@ -480,7 +586,7 @@ final class BrowseViewModel {
             errorMessage = error.localizedDescription
             allPosts = []
             loadedPostIDs = []
-            updatePageTags(from: [])
+            tagChrome.clear()
             pageTagsResolveTask?.cancel()
         }
     }
@@ -506,8 +612,22 @@ final class BrowseViewModel {
             switch flavor {
             case .moebooru: return "rating:s"           // positive form (double-negation is ignored).
             case .gelbooru: return "-rating:questionable -rating:explicit"
-            case .danbooru2: return "rating:g,s"
+            case .danbooru2: return "rating:g"          // exclude Danbooru sensitive (`s`).
             }
+        }
+    }
+
+    /// Reload when the global rating filter changes (server query + client filter must stay in sync).
+    func applyRatingFilterChange() async {
+        await loadPosts(resetPage: true)
+    }
+
+    /// When the client filter empties the visible list but more pages exist, keep paging.
+    func fillFilteredPostsIfNeeded() async {
+        var guardCount = 0
+        while posts.isEmpty, hasMorePages, !isLoading, !isLoadingMore, guardCount < 8 {
+            guardCount += 1
+            await loadMorePosts()
         }
     }
 
@@ -558,10 +678,13 @@ final class BrowseViewModel {
         return SavedTagSetStore.shared.sets
     }
 
-    func saveCurrentTagSet(named name: String) {
+    func saveCurrentTagSet(named name: String, addToPersonal: Bool = false) {
         guard !tagQuery.tags.isEmpty else { return }
-        SavedTagSetStore.shared.save(name: name, tags: tagQuery.tags)
-        AppDebug.log("SavedTagSets", "save requested name=\(name) tags=\(tagQuery.tags.count)")
+        SavedTagSetStore.shared.save(name: name, tags: tagQuery.tags, addToPersonal: addToPersonal)
+        AppDebug.log(
+            "SavedTagSets",
+            "save requested name=\(name) tags=\(tagQuery.tags.count) personal=\(addToPersonal)"
+        )
     }
 
     func applySavedTagSet(_ set: SavedTagSet) async {
@@ -675,9 +798,7 @@ final class BrowseViewModel {
         let newTags = counts.map { entry in
             BooruTag(name: entry.name, postCount: entry.count, type: tagType(for: entry.name))
         }
-        guard newTags != pageTags else { return }
-        pageTags = newTags
-        pageTagsRevision += 1
+        tagChrome.replacePageTags(newTags)
     }
 
     /// Throttles the many incremental "types resolved" callbacks into at most one rebuild per
@@ -697,7 +818,7 @@ final class BrowseViewModel {
                   self.visiblePage == expectedPage,
                   loadGeneration == self.postsLoadGeneration else { return }
             self.lastPageTagsRefresh = Date()
-            self.tagIndexRevision += 1
+            self.tagChrome.bumpTagIndexRevision()
             self.refreshPageTagTypes()
         }
     }
@@ -706,9 +827,9 @@ final class BrowseViewModel {
     private func resolvePageTagTypes(forPage expectedPage: Int, loadGeneration: Int) {
         pageTagsResolveTask?.cancel()
 
-        let names = pageTags.map(\.name)
+        let names = tagChrome.pageTags.map(\.name)
         guard !names.isEmpty else {
-            isResolvingPageTagColors = false
+            tagChrome.setResolving(false)
             return
         }
 
@@ -716,13 +837,13 @@ final class BrowseViewModel {
             servers.contains { TagIndexStore.shared.type(for: name, siteID: $0.siteID) == nil }
         }
         guard hasMissing else {
-            isResolvingPageTagColors = false
+            tagChrome.setResolving(false)
             return
         }
 
-        isResolvingPageTagColors = true
+        tagChrome.setResolving(true)
         pageTagsResolveTask = Task {
-            defer { isResolvingPageTagColors = false }
+            defer { tagChrome.setResolving(false) }
 
             await withTaskGroup(of: Void.self) { group in
                 for server in servers {
@@ -746,7 +867,7 @@ final class BrowseViewModel {
             // Final authoritative refresh once every server finished resolving.
             pageTagsRefreshTask?.cancel()
             lastPageTagsRefresh = Date()
-            tagIndexRevision += 1
+            tagChrome.bumpTagIndexRevision()
             refreshPageTagTypes()
         }
     }

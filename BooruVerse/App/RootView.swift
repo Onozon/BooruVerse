@@ -5,6 +5,10 @@ struct RootView: View {
     @State private var gallery = GalleryCoordinator()
     @State private var peek = PeekCoordinator()
     @State private var navigation = AppNavigationCoordinator()
+    @State private var sessions = AppTabSessionStore(
+        sites: RootView.makeSites(),
+        serversRevision: ServerStore.shared.revision
+    )
     @Environment(\.compactLayout) private var compactLayout
 
     private static func makeSites() -> [any BooruSite & BooruBrowsing] {
@@ -21,14 +25,16 @@ struct RootView: View {
                 .environment(gallery)
                 .environment(peek)
                 .environment(navigation)
-                .environment(AppSettingsStore.shared)
                 .environment(servers)
                 .disabled(immersiveOverlayVisible)
-                .onChange(of: servers.revision) { _, _ in
+                .onChange(of: servers.revision) { _, revision in
                     gallery.dismiss()
                     peek.dismiss()
+                    sessions.syncServersIfNeeded(
+                        sites: RootView.makeSites(),
+                        revision: revision
+                    )
                 }
-
             if let model = peek.model, let post = peek.activePost {
                 PostPeekOverlay(
                     model: model,
@@ -60,7 +66,11 @@ struct RootView: View {
                         gallery.syncFromModel()
                     },
                     onDismiss: {
-                        withAnimation(.easeInOut(duration: 0.25)) {
+                        // LazyPager already played the swipe-away animation; avoid a second
+                        // fade that briefly resurrects the image.
+                        var transaction = Transaction()
+                        transaction.disablesAnimations = true
+                        withTransaction(transaction) {
                             gallery.dismiss()
                         }
                     }
@@ -68,46 +78,53 @@ struct RootView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .ignoresSafeArea()
                 .zIndex(1000)
-                .transition(.opacity)
             }
         }
+        // Shared by tab chrome and immersive overlays (gallery sits outside tabChrome).
+        .environment(AppSettingsStore.shared)
 #if os(macOS)
+        .toolbar {
+            if !compactLayout, !immersiveOverlayVisible {
+                ToolbarItem(placement: .principal) {
+                    MacTitlebarTabBar(selection: $navigation.selectedTab)
+                }
+            }
+        }
         .toolbar(immersiveOverlayVisible ? .hidden : .visible, for: .windowToolbar)
+        // Avoid animating toolbar hide — it left a tab-sized top inset under the gallery.
+        .animation(nil, value: immersiveOverlayVisible)
+        .modifier(MacHideWindowTitle())
+        // Always strip the system split-view toggle; Browse uses its own button.
+        .toolbar(removing: .sidebarToggle)
 #endif
         .animation(.easeInOut(duration: 0.2), value: peek.isPresented)
-        .animation(.easeInOut(duration: 0.25), value: gallery.isPresented)
+        .animation(gallery.isPresented ? nil : .easeInOut(duration: 0.25), value: gallery.isPresented)
     }
 
     @ViewBuilder
     private var tabChrome: some View {
 #if os(macOS)
-        if compactLayout {
-            // Phone-like: content + bottom tab bar (native Mac TabView stays top-only).
-            VStack(spacing: 0) {
-                tabContent
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+        VStack(spacing: 0) {
+            keptAliveTabPages
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-                if !immersiveOverlayVisible {
-                    MacCompactTabBar(selection: $navigation.selectedTab)
-                }
+            if compactLayout, !immersiveOverlayVisible {
+                MacCompactTabBar(selection: $navigation.selectedTab)
             }
-        } else {
-            systemTabView
         }
 #else
         systemTabView
 #endif
     }
 
+#if os(iOS)
     private var systemTabView: some View {
         TabView(selection: $navigation.selectedTab) {
-            FeedView(sites: RootView.makeSites())
-                .id(servers.revision)
+            FeedView(session: sessions.feed)
                 .tag(AppTab.feed)
                 .tabItem { Label(AppTab.feed.title, systemImage: AppTab.feed.systemImage) }
 
-            BrowseView(sites: RootView.makeSites())
-                .id(servers.revision)
+            BrowseView(model: sessions.browseModel)
                 .tag(AppTab.browse)
                 .tabItem { Label(AppTab.browse.title, systemImage: AppTab.browse.systemImage) }
 
@@ -116,8 +133,7 @@ struct RootView: View {
                 .tag(AppTab.pools)
                 .tabItem { Label(AppTab.pools.title, systemImage: AppTab.pools.systemImage) }
 
-            FavoritesView(sites: RootView.makeSites())
-                .id(servers.revision)
+            FavoritesView(model: sessions.favoritesModel)
                 .tag(AppTab.favorites)
                 .tabItem { Label(AppTab.favorites.title, systemImage: AppTab.favorites.systemImage) }
 
@@ -126,26 +142,54 @@ struct RootView: View {
                 .tabItem { Label(AppTab.settings.title, systemImage: AppTab.settings.systemImage) }
         }
     }
+#endif
 
-    /// Shared page body for the Mac compact bottom-tab chrome (no system TabView).
-    @ViewBuilder
-    private var tabContent: some View {
-        switch navigation.selectedTab {
-        case .feed:
-            FeedView(sites: RootView.makeSites())
-                .id(servers.revision)
-        case .browse:
-            BrowseView(sites: RootView.makeSites())
-                .id(servers.revision)
-        case .pools:
-            PoolsView(sites: RootView.makeSites())
-                .id(servers.revision)
-        case .favorites:
-            FavoritesView(sites: RootView.makeSites())
-                .id(servers.revision)
-        case .settings:
-            SettingsPlaceholderView()
+    private var keptAliveTabPages: some View {
+        ZStack {
+            tabPage(.feed) {
+                FeedView(
+                    session: sessions.feed,
+                    isActive: navigation.selectedTab == .feed
+                )
+            }
+            tabPage(.browse) {
+                BrowseView(
+                    model: sessions.browseModel,
+                    scrollAnchor: Binding(
+                        get: { sessions.browseScrollAnchor },
+                        set: { sessions.browseScrollAnchor = $0 }
+                    ),
+                    isActive: navigation.selectedTab == .browse
+                )
+            }
+            tabPage(.pools) {
+                PoolsView(sites: RootView.makeSites(), isActive: navigation.selectedTab == .pools)
+                    .id(servers.revision)
+            }
+            tabPage(.favorites) {
+                FavoritesView(
+                    model: sessions.favoritesModel,
+                    scrollAnchor: Binding(
+                        get: { sessions.favoritesScrollAnchor },
+                        set: { sessions.favoritesScrollAnchor = $0 }
+                    ),
+                    isActive: navigation.selectedTab == .favorites
+                )
+            }
+            tabPage(.settings) {
+                SettingsPlaceholderView()
+            }
         }
+    }
+
+    @ViewBuilder
+    private func tabPage<Content: View>(_ tab: AppTab, @ViewBuilder content: () -> Content) -> some View {
+        let isSelected = navigation.selectedTab == tab
+        content()
+            .opacity(isSelected ? 1 : 0)
+            .allowsHitTesting(isSelected)
+            .accessibilityHidden(!isSelected)
+            .zIndex(isSelected ? 1 : 0)
     }
 
     private func addTag(_ tag: String, from source: BrowseViewModel) async {
@@ -161,6 +205,51 @@ struct RootView: View {
 }
 
 #if os(macOS)
+private struct MacHideWindowTitle: ViewModifier {
+    func body(content: Content) -> some View {
+        if #available(macOS 15.0, *) {
+            content.toolbar(removing: .title)
+        } else {
+            content
+        }
+    }
+}
+
+/// Centered titlebar tab switcher (same row as traffic lights).
+private struct MacTitlebarTabBar: View {
+    @Binding var selection: AppTab
+
+    var body: some View {
+        HStack(spacing: 4) {
+            ForEach(AppTab.allCases) { tab in
+                Button {
+                    selection = tab
+                } label: {
+                    Label(tab.title, systemImage: tab.systemImage)
+                        .labelStyle(.titleAndIcon)
+                        .font(.system(size: 12, weight: selection == tab ? .semibold : .regular))
+                        .imageScale(.medium)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 4)
+                        .background {
+                            if selection == tab {
+                                Capsule().fill(.primary.opacity(0.14))
+                            }
+                        }
+                        .contentShape(Capsule())
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(selection == tab ? .primary : .secondary)
+                .help(tab.title)
+            }
+        }
+        // Inset so the selection pill on Feed/Settings doesn't kiss the toolbar capsule edge.
+        .padding(.horizontal, 6)
+        .padding(.vertical, 2)
+        .frame(maxWidth: .infinity)
+    }
+}
+
 /// iOS-style bottom tab bar for narrow Mac windows.
 private struct MacCompactTabBar: View {
     @Binding var selection: AppTab
@@ -173,7 +262,7 @@ private struct MacCompactTabBar: View {
                 } label: {
                     VStack(spacing: 2) {
                         Image(systemName: tab.systemImage)
-                            .font(.system(size: 17, weight: .medium))
+                            .font(.system(size: 16, weight: .medium))
                         Text(tab.title)
                             .font(.system(size: 10, weight: .medium))
                     }

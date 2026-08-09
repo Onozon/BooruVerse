@@ -1,5 +1,16 @@
 import Foundation
 
+enum PostFeedAggregatorError: Error, LocalizedError, Sendable {
+    case allServersFailed
+
+    var errorDescription: String? {
+        switch self {
+        case .allServersFailed:
+            return "Couldn't load posts from any server."
+        }
+    }
+}
+
 /// Fans a paginated post query out across multiple servers and merges the results
 /// (round-robin interleave in server order) with cross-server dedup by `globalID`.
 @MainActor
@@ -27,6 +38,8 @@ final class PostFeedAggregator {
     }
 
     /// Fetches the next page from every server that still has more results, then interleaves + dedups.
+    /// Throws ``PostFeedAggregatorError/allServersFailed`` when every active server errors
+    /// (distinct from a successful empty page).
     func loadNextPage(fetch: @escaping Fetch) async throws -> [BooruPost] {
         let active = cursors.enumerated().filter { $0.element.hasMore }
         guard !active.isEmpty else { return [] }
@@ -35,6 +48,7 @@ final class PostFeedAggregator {
         // A `nil` result means that server failed (e.g. auth/network); it is dropped from this
         // page and retired for the session so one bad server can't break the whole feed.
         var fetched: [Int: [BooruPost]] = [:]
+        var failureCount = 0
 
         try await withThrowingTaskGroup(of: (Int, [BooruPost]?).self) { group in
             for (index, cursor) in active {
@@ -53,7 +67,11 @@ final class PostFeedAggregator {
                 }
             }
             for try await (index, posts) in group {
-                if let posts { fetched[index] = posts }
+                if let posts {
+                    fetched[index] = posts
+                } else {
+                    failureCount += 1
+                }
             }
         }
 
@@ -64,6 +82,10 @@ final class PostFeedAggregator {
             } else {
                 cursors[index].hasMore = false
             }
+        }
+
+        if fetched.isEmpty, failureCount > 0 {
+            throw PostFeedAggregatorError.allServersFailed
         }
 
         // Round-robin interleave, preserving original server order.

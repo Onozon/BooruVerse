@@ -3,26 +3,47 @@ import SwiftUI
 struct SettingsPlaceholderView: View {
     @Environment(AppSettingsStore.self) private var settings
     @Environment(ServerStore.self) private var servers
+    @Environment(AppNavigationCoordinator.self) private var navigation
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
 
     @State private var showAddServer = false
+    @State private var path = NavigationPath()
 
     var body: some View {
-        NavigationStack {
+        NavigationStack(path: $path) {
             settingsForm
+#if os(macOS)
+                .navigationTitle("")
+#else
                 .navigationTitle("Settings")
+#endif
 #if os(macOS)
                 .formStyle(.grouped)
 #endif
                 .frame(maxWidth: settingsContentWidth)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                .navigationDestination(for: AppNavigationCoordinator.SettingsRoute.self) { route in
+                    switch route {
+                    case .personalFeedSets:
+                        PersonalFeedSetsView()
+                    }
+                }
                 .sheet(isPresented: $showAddServer) {
                     AddServerView()
 #if os(macOS)
                         .frame(minWidth: 440, idealWidth: 480, minHeight: 220, idealHeight: 260)
 #endif
                 }
+                .onAppear { consumePendingRoute() }
+                .onChange(of: navigation.pendingSettingsRoute) { _, _ in
+                    consumePendingRoute()
+                }
         }
+    }
+
+    private func consumePendingRoute() {
+        guard let route = navigation.consumePendingSettingsRoute() else { return }
+        path.append(route)
     }
 
     private var settingsContentWidth: CGFloat? {
@@ -37,8 +58,21 @@ struct SettingsPlaceholderView: View {
     private var settingsForm: some View {
         Form {
             serversSection
+            personalFeedSection
             ratingSection
             gallerySection
+        }
+    }
+
+    private var personalFeedSection: some View {
+        Section {
+            NavigationLink(value: AppNavigationCoordinator.SettingsRoute.personalFeedSets) {
+                Label("Personal Feed", systemImage: "person.crop.rectangle.stack")
+            }
+        } header: {
+            Text("Feed")
+        } footer: {
+            Text("Choose which saved tag sets appear in the Personal segment of Feed.")
         }
     }
 
@@ -147,10 +181,12 @@ struct SettingsPlaceholderView: View {
                 .buttonStyle(.plain)
             }
 #endif
+
+            Toggle("Load Full Quality in Viewer", isOn: fullQualityViewerBinding)
         } header: {
             Text("Gallery")
         } footer: {
-            Text("Applies to Browse and Favorites. Scroll-to-current post in the viewer is preserved.")
+            Text("Layout applies to Browse and Favorites. Full quality downloads the original file as soon as a post opens in the viewer (uses more data).")
         }
     }
 
@@ -165,6 +201,13 @@ struct SettingsPlaceholderView: View {
         Binding(
             get: { settings.galleryTilingMode },
             set: { settings.galleryTilingMode = $0 }
+        )
+    }
+
+    private var fullQualityViewerBinding: Binding<Bool> {
+        Binding(
+            get: { settings.loadFullQualityInViewer },
+            set: { settings.loadFullQualityInViewer = $0 }
         )
     }
 }
@@ -415,4 +458,5 @@ private struct ColorSwatchGrid: View {
     SettingsPlaceholderView()
         .environment(AppSettingsStore.shared)
         .environment(ServerStore.shared)
+        .environment(AppNavigationCoordinator())
 }

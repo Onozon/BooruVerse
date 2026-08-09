@@ -13,6 +13,7 @@ struct BooruVerseApp: App {
         }
 #if os(macOS)
         .defaultSize(width: 1100, height: 760)
+        .windowToolbarStyle(.unified)
 #endif
     }
 }

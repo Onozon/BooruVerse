@@ -3,15 +3,62 @@
     "refractivity",
     "specular-location"
   ],
-  "fill" : "automatic",
+  "fill-specializations" : [
+    {
+      "value" : "system-light"
+    },
+    {
+      "appearance" : "dark",
+      "value" : "system-dark"
+    }
+  ],
   "groups" : [
     {
+      "layers" : [
+        {
+          "fill-specializations" : [
+            {
+              "value" : {
+                "solid" : "display-p3:0.96783,0.22874,0.42421,0.51319"
+              }
+            },
+            {
+              "appearance" : "dark",
+              "value" : {
+                "solid" : "display-p3:0.96783,0.22874,0.42421,0.72000"
+              }
+            }
+          ],
+          "glass" : true,
+          "image-name" : "booruverse-mark.svg",
+          "name" : "booruverse-mark",
+          "position" : {
+            "scale" : 1.24,
+            "translation-in-points" : [
+              0,
+              0
+            ]
+          }
+        }
+      ],
+      "shadow" : {
+        "kind" : "neutral",
+        "opacity" : 0.6
+      },
+      "translucency" : {
+        "enabled" : true,
+        "value" : 0.2
+      }
+    },
+    {
       "blur-material" : 0,
+      "hidden" : true,
       "layers" : [
         {
           "fill" : {
             "solid" : "extended-gray:1.00000,0.47000"
           },
+          "hidden" : false,
           "image-name" : "Picture2.png",
           "name" : "Picture2",
           "opacity" : 1,
@@ -43,13 +90,15 @@
     },
     {
       "blur-material" : 0.67,
+      "hidden" : true,
       "layers" : [
         {
           "blend-mode" : "normal",
           "fill" : {
-            "solid" : "extended-srgb:0.00000,0.75294,0.90980,0.36000"
+            "solid" : "extended-srgb:0.00000,0.75294,0.90980,0.00000"
           },
           "glass" : true,
+          "hidden" : false,
           "image-name" : "Picture1 2.png",
           "name" : "Picture1 2",
           "opacity" : 1,

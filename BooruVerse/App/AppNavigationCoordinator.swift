@@ -39,6 +39,13 @@ final class AppNavigationCoordinator {
     /// A tag requested from another tab (Favorites/Pools/Feed) to be added in Browse.
     var pendingBrowseTag: String?
 
+    /// When set, Settings should push the Personal Feed sets picker.
+    private(set) var pendingSettingsRoute: SettingsRoute?
+
+    enum SettingsRoute: Hashable {
+        case personalFeedSets
+    }
+
     func focusBrowseResults() {
         focusBrowseDetail = true
     }
@@ -58,5 +65,15 @@ final class AppNavigationCoordinator {
     func consumePendingBrowseTag() -> String? {
         defer { pendingBrowseTag = nil }
         return pendingBrowseTag
+    }
+
+    func openPersonalFeedSets() {
+        pendingSettingsRoute = .personalFeedSets
+        selectedTab = .settings
+    }
+
+    func consumePendingSettingsRoute() -> SettingsRoute? {
+        defer { pendingSettingsRoute = nil }
+        return pendingSettingsRoute
     }
 }

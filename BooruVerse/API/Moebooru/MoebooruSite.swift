@@ -1,7 +1,7 @@
 import Foundation
 
 /// Generic Moebooru / Danbooru 1.13.x site (yande.re, konachan.com, …).
-struct MoebooruSite: BooruSite, BooruBrowsing, BooruPools, BooruPopular {
+nonisolated struct MoebooruSite: BooruSite, BooruBrowsing, BooruPools, BooruPopular {
     let siteID: String
     let displayName: String
     let baseURL: URL

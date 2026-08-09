@@ -28,6 +28,9 @@ struct PoolDetailView: View {
             model.loadTagCache()
             await model.bootstrapIfNeeded()
         }
+        .onChange(of: settings.ratingFilter) { _, _ in
+            Task { await model.applyRatingFilterChange() }
+        }
         .onChange(of: model.listGeneration) { _, _ in
             if gallery.isOpen(for: model) {
                 gallery.dismiss()

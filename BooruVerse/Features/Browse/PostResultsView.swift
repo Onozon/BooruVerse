@@ -6,6 +6,11 @@ struct PostResultsView: View {
     let tilingMode: GalleryTilingMode
     var showsSidebarToggle = true
     var navigationTitle = "Posts"
+    /// When false (inactive keep-alive tab), skip toolbar items so they don't leak into the window.
+    var contributesToolbar = true
+    /// When set, scroll to this post after the list is ready (feed session restore).
+    var restoredScrollPostID: String? = nil
+    var onVisiblePostChange: ((String) -> Void)? = nil
 
     @Environment(GalleryCoordinator.self) private var gallery
     @Environment(PeekCoordinator.self) private var peek
@@ -15,6 +20,10 @@ struct PostResultsView: View {
     @State private var scrollRequest: String?
     @State private var suppressGridScroll = false
     @State private var widthUpdateToken = 0
+    @State private var didRestoreScroll = false
+    /// Indices of cells currently reported visible; used to pick the topmost anchor.
+    @State private var visiblePostIndices: [String: Int] = [:]
+    @State private var freezeVisibilityTracking = false
 
     private let adaptiveColumns = [GridItem(.adaptive(minimum: GalleryLayoutMetrics.minTileWidth), spacing: GalleryLayoutMetrics.spacing)]
 
@@ -36,43 +45,50 @@ struct PostResultsView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+#if os(macOS)
+        .navigationTitle("")
+#else
         .navigationTitle(navigationTitle)
+#endif
 #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
         .navigationBarBackButtonHidden(showsSidebarToggle && horizontalSizeClass == .compact)
         .toolbarBackground(.background, for: .navigationBar)
         .toolbarBackground(.visible, for: .navigationBar)
 #endif
-        .hideSystemSidebarToggle(showsSidebarToggle && horizontalSizeClass == .compact)
+        // Hide system split-view toggle everywhere — Feed must never show it.
+        .hideSystemSidebarToggle(true)
         .modifier(CompactSidebarPresentGesture(
             preferredCompactColumn: $preferredCompactColumn,
             isEnabled: showsSidebarToggle
         ))
         .toolbar {
-            if showsSidebarToggle, horizontalSizeClass == .compact {
-                ToolbarItem(placement: .navigation) {
-                    Button {
-                        preferredCompactColumn = .sidebar
-                    } label: {
-                        Label("Search", systemImage: "line.3.horizontal")
+            if contributesToolbar {
+                if showsSidebarToggle, horizontalSizeClass == .compact {
+                    ToolbarItem(placement: .navigation) {
+                        Button {
+                            preferredCompactColumn = .sidebar
+                        } label: {
+                            Label("Search", systemImage: "line.3.horizontal")
+                        }
                     }
                 }
-            }
 
-            ToolbarItem(placement: .automatic) {
-                if model.isLoading || model.isLoadingMore {
-                    ProgressView()
-                        .controlSize(.small)
+                ToolbarItem(placement: .automatic) {
+                    if model.isLoading || model.isLoadingMore {
+                        ProgressView()
+                            .controlSize(.small)
+                    }
                 }
-            }
 
-            ToolbarItem(placement: .automatic) {
-                Button {
-                    Task { await model.refreshPosts() }
-                } label: {
-                    Label("Refresh", systemImage: "arrow.clockwise")
+                ToolbarItem(placement: .primaryAction) {
+                    Button {
+                        Task { await model.refreshPosts() }
+                    } label: {
+                        Label("Refresh", systemImage: "arrow.clockwise")
+                    }
+                    .disabled(model.isLoading)
                 }
-                .disabled(model.isLoading)
             }
         }
     }
@@ -91,17 +107,17 @@ struct PostResultsView: View {
                     ScrollView(.vertical) {
                         VStack(alignment: .leading, spacing: 0) {
                             if model.posts.isEmpty {
-                                ContentUnavailableView(
-                                    emptyStateTitle,
-                                    systemImage: emptyStateIcon,
-                                    description: Text(emptyStateDescription)
-                                )
-                                .frame(maxWidth: .infinity)
-                                .padding(.vertical, 48)
+                                emptyResults
+                                    .frame(maxWidth: .infinity)
+                                    .padding(.vertical, 48)
                             } else {
+                                let widthBucket = Int((contentWidth / 8).rounded())
                                 galleryContent(contentWidth: contentWidth)
                                     .frame(width: contentWidth, alignment: .topLeading)
                                     .padding(GalleryLayoutMetrics.gridPadding)
+                                    // Sidebar toggle and window resize both change width —
+                                    // animate the reflow like the split-view sidebar does.
+                                    .animation(.easeInOut(duration: 0.28), value: widthBucket)
 
                                 if model.isLoadingMore {
                                     ProgressView()
@@ -117,13 +133,89 @@ struct PostResultsView: View {
                         scrollToPost(postID, using: proxy)
                         scrollRequest = nil
                     }
+                    .onChange(of: model.listGeneration) { _, _ in
+                        didRestoreScroll = false
+                    }
+                    .onAppear {
+                        restoreScrollIfNeeded()
+                    }
+                    .onChange(of: model.posts.count) { _, _ in
+                        restoreScrollIfNeeded()
+                    }
+                    .onChange(of: gallery.isPresented) { wasPresented, isPresented in
+                        // After closing the viewer, snap the grid to the last viewed post.
+                        guard wasPresented, !isPresented else { return }
+                        if let returnID = gallery.consumeReturnPostID(),
+                           model.posts.contains(where: { $0.globalID == returnID }) {
+                            onVisiblePostChange?(returnID)
+                            scrollRequest = returnID
+                        }
+                    }
                     .refreshable {
                         await model.refreshPosts()
                     }
                 }
                 .onChange(of: geometry.size.width) { _, _ in
+                    // Compact↔wide is handled below; avoid cancelling that restore via token races.
+                    guard !freezeVisibilityTracking else { return }
                     suppressGridScrollDuringResize()
                 }
+                .onChange(of: isCompactGallery) { _, isCompact in
+                    handleCompactLayoutChange(isCompact: isCompact)
+                }
+            }
+        }
+    }
+
+    private func restoreScrollIfNeeded() {
+        guard !didRestoreScroll else { return }
+        guard let restoredScrollPostID else { return }
+        guard model.posts.contains(where: { $0.globalID == restoredScrollPostID }) else { return }
+        didRestoreScroll = true
+        scrollRequest = restoredScrollPostID
+    }
+
+    private func handleCompactLayoutChange(isCompact: Bool) {
+        // Capture the topmost visible post BEFORE freezing — appear storms during
+        // LazyVStack rebuild otherwise rewrite the anchor to near the list end.
+        let leadingVisibleID = visiblePostIndices.min(by: { $0.value < $1.value })?.key
+        let baseID = leadingVisibleID ?? restoredScrollPostID
+
+        freezeVisibilityTracking = true
+        suppressGridScroll = true
+        visiblePostIndices.removeAll()
+        widthUpdateToken += 1
+        let token = widthUpdateToken
+
+        let targetID: String?
+        if isCompact, let baseID, let idx = model.posts.firstIndex(where: { $0.globalID == baseID }) {
+            // Compact chrome covers more of the top — nudge a few posts forward so the
+            // previously visible row stays in the open viewport.
+            let nudged = min(idx + 5, max(model.posts.count - 1, 0))
+            targetID = model.posts.indices.contains(nudged) ? model.posts[nudged].globalID : baseID
+        } else {
+            targetID = baseID
+        }
+
+        if let targetID {
+            onVisiblePostChange?(targetID)
+        }
+
+        func applyRestore() {
+            guard token == widthUpdateToken else { return }
+            suppressGridScroll = false
+            if let targetID {
+                scrollRequest = targetID
+            }
+        }
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35, execute: applyRestore)
+        // Second pass after LazyVStack has materialized nearby cells.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) {
+            applyRestore()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                guard token == widthUpdateToken else { return }
+                freezeVisibilityTracking = false
             }
         }
     }
@@ -182,7 +274,8 @@ struct PostResultsView: View {
             borderColorProvider: { post in borderColor(for: post) },
             onTap: { openGallery(post: $0) },
             onLongPress: { openPeek(for: $0) },
-            onAppearPost: { handlePostAppear(for: $0) }
+            onAppearPost: { handlePostAppear(for: $0) },
+            onDisappearPost: { handlePostDisappear(for: $0) }
         )
         .equatable()
     }
@@ -205,6 +298,9 @@ struct PostResultsView: View {
         .onAppear {
             handlePostAppear(for: post)
         }
+        .onDisappear {
+            handlePostDisappear(for: post)
+        }
     }
 
     /// Per-server border color, shown only when 2+ servers are enabled.
@@ -214,7 +310,15 @@ struct PostResultsView: View {
     }
 
     private func handlePostAppear(for post: BooruPost) {
+        guard contributesToolbar else { return }
         guard let index = model.posts.firstIndex(where: { $0.globalID == post.globalID }) else { return }
+
+        if !freezeVisibilityTracking {
+            visiblePostIndices[post.globalID] = index
+            if let leading = visiblePostIndices.min(by: { $0.value < $1.value })?.key {
+                onVisiblePostChange?(leading)
+            }
+        }
 
         if index % BrowseViewModel.pageSize == 0 {
             model.setVisiblePage(model.pageNumber(forPostAt: index))
@@ -224,19 +328,58 @@ struct PostResultsView: View {
         }
     }
 
+    private func handlePostDisappear(for post: BooruPost) {
+        guard contributesToolbar else { return }
+        guard !freezeVisibilityTracking else { return }
+        visiblePostIndices.removeValue(forKey: post.globalID)
+        if let leading = visiblePostIndices.min(by: { $0.value < $1.value })?.key {
+            onVisiblePostChange?(leading)
+        }
+    }
+
     private func scrollToPost(_ postID: String, using proxy: ScrollViewProxy) {
-        guard !suppressGridScroll else { return }
         guard model.posts.contains(where: { $0.globalID == postID }) else { return }
 
         Task { @MainActor in
-            try? await Task.sleep(for: .milliseconds(150))
-            guard !suppressGridScroll else { return }
-            proxy.scrollTo(postID, anchor: .top)
+            // Wait out resize suppression (compact↔regular) so we don't no-op the restore.
+            for _ in 0..<10 where suppressGridScroll {
+                try? await Task.sleep(for: .milliseconds(40))
+            }
+            await Task.yield()
+            try? await Task.sleep(for: .milliseconds(16))
+            guard model.posts.contains(where: { $0.globalID == postID }) else { return }
+            var transaction = Transaction()
+            transaction.disablesAnimations = true
+            withTransaction(transaction) {
+                // Center-ish anchor avoids the “two posts above” drift of `.top`.
+                proxy.scrollTo(postID, anchor: UnitPoint(x: 0.5, y: 0.2))
+            }
         }
     }
 
     private var loadingTitle: String {
         model.mode == .favorites ? "Loading favorites…" : "Loading posts…"
+    }
+
+    @ViewBuilder
+    private var emptyResults: some View {
+        if let errorMessage = model.errorMessage {
+            ContentUnavailableView {
+                Label("Couldn't Load Posts", systemImage: "exclamationmark.triangle")
+            } description: {
+                Text(errorMessage)
+            } actions: {
+                Button("Retry") {
+                    Task { await model.refreshPosts() }
+                }
+            }
+        } else {
+            ContentUnavailableView(
+                emptyStateTitle,
+                systemImage: emptyStateIcon,
+                description: Text(emptyStateDescription)
+            )
+        }
     }
 
     private var emptyStateTitle: String {
@@ -258,7 +401,7 @@ struct PostResultsView: View {
 
     private func openGallery(post: BooruPost) {
         peek.dismiss()
-        scrollRequest = post.globalID
+        onVisiblePostChange?(post.globalID)
         RemoteImageLoaderBridge.prefetch(post.viewerURL, priority: .high, maxPixelSize: nil)
         withAnimation(.easeInOut(duration: 0.25)) {
             gallery.open(model: model, postID: post.globalID)
@@ -337,6 +480,7 @@ private struct ColumnsMasonryGallery: View, Equatable {
     let onTap: (BooruPost) -> Void
     let onLongPress: (BooruPost) -> Void
     let onAppearPost: (BooruPost) -> Void
+    let onDisappearPost: (BooruPost) -> Void
 
     static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.listGeneration == rhs.listGeneration
@@ -372,6 +516,7 @@ private struct ColumnsMasonryGallery: View, Equatable {
                         )
                         .id(item.post.globalID)
                         .onAppear { onAppearPost(item.post) }
+                        .onDisappear { onDisappearPost(item.post) }
                     }
                 }
                 .frame(width: columnWidth, alignment: .top)

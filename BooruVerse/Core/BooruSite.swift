@@ -1,14 +1,15 @@
 import Foundation
 
 /// A booru instance the app can browse (yande.re, danbooru, gelbooru, …).
-protocol BooruSite: Sendable {
+/// Nonisolated: metadata is immutable and used from `@Sendable` fetch closures.
+nonisolated protocol BooruSite: Sendable {
     var siteID: String { get }
     var displayName: String { get }
     var baseURL: URL { get }
     var apiFlavor: BooruAPIFlavor { get }
 }
 
-enum BooruAPIFlavor: String, Codable, Sendable, CaseIterable {
+nonisolated enum BooruAPIFlavor: String, Codable, Sendable, CaseIterable {
     /// Danbooru 1.13.x / Moebooru (yande.re, konachan, …)
     case moebooru
     /// Danbooru 2.x (danbooru.donmai.us)
@@ -26,7 +27,7 @@ enum BooruAPIFlavor: String, Codable, Sendable, CaseIterable {
 }
 
 /// Read-only browsing operations shared by all backends.
-protocol BooruBrowsing: Sendable {
+nonisolated protocol BooruBrowsing: Sendable {
     func fetchPosts(tags: String, page: Int, limit: Int) async throws -> [BooruPost]
     func suggestTags(currentTags: [String], fragment: String, limit: Int) async throws -> [BooruTag]
     func fetchTagIndexPage(page: Int, limit: Int) async throws -> [BooruTag]
@@ -41,12 +42,12 @@ extension BooruBrowsing {
 }
 
 /// Pool browsing operations (Moebooru `pool.json` / `pool/show.json`).
-protocol BooruPools: Sendable {
+nonisolated protocol BooruPools: Sendable {
     func fetchPools(query: String, page: Int) async throws -> [BooruPool]
     func fetchPoolPosts(poolID: Int, page: Int, limit: Int) async throws -> [BooruPost]
 }
 
 /// Trending feed (Moebooru `post/popular_recent.json`).
-protocol BooruPopular: Sendable {
+nonisolated protocol BooruPopular: Sendable {
     func fetchPopular(period: PopularPeriod) async throws -> [BooruPost]
 }

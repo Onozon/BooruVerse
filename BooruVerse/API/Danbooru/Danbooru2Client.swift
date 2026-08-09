@@ -2,7 +2,7 @@ import Foundation
 
 /// Danbooru's modern media pipeline. The flat `*_file_url` fields are legacy and are `null`
 /// for many posts (webp/avif assets, videos, ugoira, …); the real URLs live here.
-private struct Danbooru2MediaAsset: Decodable {
+nonisolated private struct Danbooru2MediaAsset: Decodable {
     let variants: [Variant]?
 
     struct Variant: Decodable {
@@ -32,7 +32,7 @@ private struct Danbooru2MediaAsset: Decodable {
     }
 }
 
-private struct Danbooru2PostDTO: Decodable {
+nonisolated private struct Danbooru2PostDTO: Decodable {
     let id: Int
     let md5: String?
     let fileUrl: String?
@@ -51,6 +51,7 @@ private struct Danbooru2PostDTO: Decodable {
     let fileExt: String?
     let source: String?
     let mediaAsset: Danbooru2MediaAsset?
+    let createdAt: FlexibleAPIDate?
 
     func toModel(serverID: String) -> BooruPost {
         // Prefer the flat fields, fall back to media_asset variants when they're null
@@ -72,7 +73,8 @@ private struct Danbooru2PostDTO: Decodable {
             sampleURL: sample,
             fileURL: file,
             fileExt: fileExt ?? "",
-            sourceURL: source.flatMap(URL.init(string:))
+            sourceURL: source.flatMap(URL.init(string:)),
+            createdAt: createdAt?.date
         )
     }
 
@@ -101,12 +103,14 @@ private struct Danbooru2PostDTO: Decodable {
         switch raw?.lowercased() {
         case "e": return .explicit
         case "q": return .questionable
-        default: return .safe // g (general) / s (sensitive)
+        case "s": return .sensitive
+        case "g": return .safe
+        default: return .safe
         }
     }
 }
 
-private struct Danbooru2TagDTO: Decodable {
+nonisolated private struct Danbooru2TagDTO: Decodable {
     let name: String?
     let postCount: Int?
     let category: Int?
@@ -118,7 +122,7 @@ private struct Danbooru2TagDTO: Decodable {
 }
 
 /// Danbooru 2.x client — see https://danbooru.donmai.us/wiki_pages/help:api
-struct Danbooru2Client: BooruBrowsing, BooruPopular {
+nonisolated struct Danbooru2Client: BooruBrowsing, BooruPopular {
     let baseURL: URL
     let siteID: String
     /// Danbooru account login (username).
@@ -261,7 +265,7 @@ struct Danbooru2Client: BooruBrowsing, BooruPopular {
 }
 
 /// Danbooru 2.x site (danbooru.donmai.us).
-struct Danbooru2Site: BooruSite, BooruBrowsing, BooruPopular {
+nonisolated struct Danbooru2Site: BooruSite, BooruBrowsing, BooruPopular {
     let siteID: String
     let displayName: String
     let baseURL: URL

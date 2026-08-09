@@ -1,10 +1,10 @@
 import Foundation
 
-private struct GelbooruPostResponse: Decodable {
+nonisolated private struct GelbooruPostResponse: Decodable {
     let post: [GelbooruPostDTO]?
 }
 
-private struct GelbooruPostDTO: Decodable {
+nonisolated private struct GelbooruPostDTO: Decodable {
     let id: Int
     let md5: String?
     let fileUrl: String?
@@ -16,6 +16,9 @@ private struct GelbooruPostDTO: Decodable {
     let rating: String?
     let score: Int?
     let source: String?
+    let createdAt: FlexibleAPIDate?
+    /// Gelbooru / Safebooru often omit `created_at` and expose unix `change` instead.
+    let change: FlexibleAPIDate?
 
     func toModel(serverID: String) -> BooruPost {
         let ext = fileUrl.flatMap { URL(string: $0)?.pathExtension } ?? ""
@@ -32,7 +35,8 @@ private struct GelbooruPostDTO: Decodable {
             sampleURL: sampleUrl.flatMap(URL.init(string:)),
             fileURL: fileUrl.flatMap(URL.init(string:)),
             fileExt: ext,
-            sourceURL: source.flatMap(URL.init(string:))
+            sourceURL: source.flatMap(URL.init(string:)),
+            createdAt: createdAt?.date ?? change?.date
         )
     }
 
@@ -45,11 +49,11 @@ private struct GelbooruPostDTO: Decodable {
     }
 }
 
-private struct GelbooruTagResponse: Decodable {
+nonisolated private struct GelbooruTagResponse: Decodable {
     let tag: [GelbooruTagDTO]?
 }
 
-private struct GelbooruTagDTO: Decodable {
+nonisolated private struct GelbooruTagDTO: Decodable {
     let name: String?
     let count: Int?
     let type: Int?
@@ -61,7 +65,7 @@ private struct GelbooruTagDTO: Decodable {
 }
 
 /// Gelbooru 0.2 client — see https://gelbooru.com/index.php?page=wiki&s=view&id=18780
-struct GelbooruClient: BooruBrowsing {
+nonisolated struct GelbooruClient: BooruBrowsing {
     let baseURL: URL
     let siteID: String
     let apiKey: String?
@@ -211,7 +215,7 @@ struct GelbooruClient: BooruBrowsing {
 }
 
 /// Gelbooru site (gelbooru.com). No pools/popular feed support.
-struct GelbooruSite: BooruSite, BooruBrowsing {
+nonisolated struct GelbooruSite: BooruSite, BooruBrowsing {
     let siteID: String
     let displayName: String
     let baseURL: URL

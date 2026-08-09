@@ -9,13 +9,16 @@ struct PostGalleryViewer: View {
     let onPostsUpdated: () -> Void
     let onDismiss: () -> Void
 
+    @Environment(AppSettingsStore.self) private var settings
+
     private var selectedIndex: Int {
         posts.firstIndex(where: { $0.globalID == selectedPostID }) ?? 0
     }
 
-    @State private var dismissOffset: CGFloat = 0
+    @State private var pageIndex = 0
     @State private var isZoomed = false
     @State private var showChrome = false
+    @State private var dismissBackgroundOpacity: CGFloat = 1
     @State private var exportDocument: SavedImageDocument?
     @State private var showFileExporter = false
     @State private var exportFilename = "image.jpg"
@@ -25,8 +28,9 @@ struct PostGalleryViewer: View {
     @State private var upgradedPostID: String?
     @State private var upgradedImage: PlatformImage?
     @State private var fullImageLoadTask: Task<Void, Never>?
-    @State private var isPagerReady = false
-    @State private var suppressPagerScrollPosition = false
+#if os(macOS)
+    @FocusState private var galleryFocused: Bool
+#endif
 
     private var currentPost: BooruPost? {
         guard posts.indices.contains(selectedIndex) else { return nil }
@@ -38,24 +42,10 @@ struct PostGalleryViewer: View {
         return model.postTagGroups(for: currentPost)
     }
 
-    private var dismissProgress: CGFloat {
-        min(abs(dismissOffset) / 320, 1)
-    }
-
-    private var scrollPositionID: Binding<String?> {
-        Binding(
-            get: { selectedPostID },
-            set: { newID in
-                guard let newID, newID != selectedPostID else { return }
-                selectedPostID = newID
-            }
-        )
-    }
-
     var body: some View {
         Group {
             if currentPost != nil {
-                galleryContent()
+                galleryContent
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -66,22 +56,47 @@ struct PostGalleryViewer: View {
 #endif
         .onDisappear {
             cancelFullImageLoad()
-            isPagerReady = false
         }
         .onAppear {
             guard let currentPost else {
                 onDismiss()
                 return
             }
+            pageIndex = selectedIndex
+            dismissBackgroundOpacity = 1
             RemoteImageLoaderBridge.prefetch(currentPost.viewerURL)
             model.resolvePostTags(for: currentPost)
+            requestFullQualityIfNeeded(for: currentPost)
+#if os(macOS)
+            galleryFocused = true
+#endif
         }
         .onChange(of: selectedPostID) { oldID, newID in
             guard oldID != newID else { return }
+            let index = posts.firstIndex(where: { $0.globalID == newID }) ?? pageIndex
+            if pageIndex != index {
+                pageIndex = index
+            }
             handlePageChange(to: newID)
         }
+        .onChange(of: pageIndex) { _, newIndex in
+            guard posts.indices.contains(newIndex) else { return }
+            let id = posts[newIndex].globalID
+            if selectedPostID != id {
+                selectedPostID = id
+            }
+        }
+        .onChange(of: posts.map(\.globalID)) { _, ids in
+            if let index = ids.firstIndex(of: selectedPostID), pageIndex != index {
+                pageIndex = index
+            }
+        }
         .animation(.easeInOut(duration: 0.25), value: showChrome)
-        .simultaneousGesture(!isZoomed && !showChrome ? navigationGesture : nil)
+#if os(macOS)
+        .focusable()
+        .focused($galleryFocused)
+        .focusEffectDisabled()
+#endif
         .fileExporter(
             isPresented: $showFileExporter,
             document: exportDocument,
@@ -114,110 +129,147 @@ struct PostGalleryViewer: View {
 #endif
     }
 
-    @ViewBuilder
-    private func galleryContent() -> some View {
-        GeometryReader { geometry in
-            ZStack {
-                Color.black
-                    .opacity(1 - Double(dismissProgress) * 0.5)
-                    .ignoresSafeArea()
-                    .onTapGesture {
-                        if showChrome {
-                            withAnimation(.easeInOut(duration: 0.25)) {
-                                showChrome = false
-                            }
-                        } else {
-                            onDismiss()
+    private var galleryContent: some View {
+        ZStack {
+            Color.black
+                .opacity(Double(dismissBackgroundOpacity))
+                .ignoresSafeArea()
+
+            platformPager
+
+            if fullImageProgress != nil {
+                fullImageProgressBar
+                    .transition(.opacity)
+            }
+        }
+        .overlay(alignment: .topTrailing) {
+            if showChrome {
+                GalleryCloseButton(onClose: onDismiss)
+            }
+        }
+        .overlay(alignment: .bottom) {
+            if showChrome, let currentPost {
+                GalleryBottomChrome(
+                    model: model,
+                    post: currentPost,
+                    tagGroups: tagGroups,
+                    onAddTag: { tag in
+                        onDismiss()
+                        Task {
+                            await onAddTag(tag)
                         }
-                    }
-
-                imagePager(in: geometry)
-                    .offset(y: dismissOffset)
-
-                if fullImageProgress != nil {
-                    fullImageProgressBar
-                        .transition(.opacity)
-                }
-            }
-            .overlay(alignment: .topTrailing) {
-                if showChrome {
-                    GalleryCloseButton(onClose: onDismiss)
-                }
-            }
-            .overlay(alignment: .bottom) {
-                if showChrome, let currentPost {
-                    GalleryBottomChrome(
-                        model: model,
-                        post: currentPost,
-                        tagGroups: tagGroups,
-                        onAddTag: { tag in
-                            onDismiss()
-                            Task {
-                                await onAddTag(tag)
-                            }
-                        },
-                        onExport: { Task { await prepareExport(for: currentPost) } },
-                        onSaveError: { actionError = $0 }
-                    )
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
-                    .onAppear {
-                        model.resolvePostTags(for: currentPost)
-                    }
+                    },
+                    onExport: { Task { await prepareExport(for: currentPost) } },
+                    onSaveError: { actionError = $0 }
+                )
+                .transition(.move(edge: .bottom).combined(with: .opacity))
+                .onAppear {
+                    model.resolvePostTags(for: currentPost)
                 }
             }
         }
     }
 
-    private func imagePager(in geometry: GeometryProxy) -> some View {
-        ScrollViewReader { proxy in
-            let pager = ScrollView(.horizontal) {
-                LazyHStack(spacing: 0) {
-                    ForEach(posts, id: \.globalID) { post in
-                        imagePage(for: post, in: geometry)
-                            .containerRelativeFrame(.horizontal)
-                            .frame(height: geometry.size.height)
-                            .id(post.globalID)
-                    }
-                }
-                .scrollTargetLayout()
-            }
-            .scrollTargetBehavior(.paging)
-            .scrollIndicators(.hidden)
-            .scrollDisabled(isZoomed)
-            .background(Color.black)
-
-            Group {
-                if isPagerReady, !suppressPagerScrollPosition {
-                    pager.scrollPosition(id: scrollPositionID)
-                } else {
-                    pager
-                }
-            }
-            .opacity(isPagerReady ? 1 : 0)
-            .onAppear {
-                alignPager(to: selectedPostID, using: proxy, animated: false)
-                DispatchQueue.main.async {
-                    isPagerReady = true
-                }
-            }
-            .onChange(of: geometry.size) { oldSize, newSize in
-                guard oldSize != .zero, oldSize != newSize else { return }
-                suppressPagerScrollPosition = true
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
-                    alignPager(to: selectedPostID, using: proxy, animated: false)
-                    suppressPagerScrollPosition = false
-                }
-            }
-        }
+    @ViewBuilder
+    private var platformPager: some View {
+#if os(iOS)
+        iosLazyPager
+#elseif os(macOS)
+        macPageController
+#endif
     }
 
-    private func alignPager(to postID: String, using proxy: ScrollViewProxy, animated: Bool) {
-        var transaction = Transaction()
-        transaction.disablesAnimations = !animated
-        withTransaction(transaction) {
-            proxy.scrollTo(postID, anchor: .center)
+#if os(iOS)
+    private var iosLazyPager: some View {
+        LazyPager(data: posts, page: $pageIndex) { post in
+            GalleryPageImage(
+                post: post,
+                imageOverride: upgradedPostID == post.globalID ? upgradedImage : nil,
+                loadPriority: post.globalID == selectedPostID ? .high : .background,
+                onImageLoaded: {
+                    guard post.globalID == selectedPostID else { return }
+                    prefetchAdjacentImages(around: selectedIndex)
+                }
+            )
         }
+        .zoomable(min: 1, max: 5)
+        .settings { config in
+            config.contentAspectRatio = { post in
+                guard post.width > 0, post.height > 0 else { return nil }
+                return CGFloat(post.width) / CGFloat(post.height)
+            }
+        }
+        .onDismiss(backgroundOpacity: $dismissBackgroundOpacity) {
+            onDismiss()
+        }
+        .onTap {
+            toggleChrome()
+        }
+        .onDoubleTap {
+            if let currentPost {
+                requestFullImage(for: currentPost)
+            }
+        }
+        .onZoom { post, scale in
+            let zoomed = scale > 1.01
+            isZoomed = zoomed
+            if zoomed {
+                requestFullImage(for: post)
+            }
+        }
+        .shouldLoadMore {
+            Task {
+                await model.loadMorePostsIfNeeded(nearPostID: selectedPostID)
+                onPostsUpdated()
+            }
+        }
+        .background(Color.black.opacity(dismissBackgroundOpacity))
+        .ignoresSafeArea()
     }
+#endif
+
+#if os(macOS)
+    private var macPageController: some View {
+        MacGalleryPager(
+            selectedPostID: $selectedPostID,
+            posts: posts,
+            isZoomed: isZoomed,
+            autoLoadFullQuality: settings.loadFullQualityInViewer,
+            onVerticalDismiss: {
+                guard !isZoomed else { return }
+                onDismiss()
+            },
+            onKeyboardDismiss: {
+                onDismiss()
+            },
+            onKeyboardMove: { delta in
+                moveTo(offset: delta)
+            },
+            onToggleChrome: {
+                toggleChrome()
+            },
+            onZoomChanged: { zoomed in
+                isZoomed = zoomed
+            },
+            onImageLoaded: { postID in
+                guard postID == selectedPostID else { return }
+                prefetchAdjacentImages(around: selectedIndex)
+            },
+            onFullImageProgress: { postID, progress in
+                guard postID == selectedPostID else { return }
+                fullImageProgress = progress
+            }
+        ) { post, dismissScroll in
+            MacGalleryPage(
+                post: post,
+                onVerticalDismissScroll: dismissScroll
+            )
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color.black)
+        .ignoresSafeArea()
+    }
+#endif
 
     private var fullImageProgressBar: some View {
         VStack(spacing: 0) {
@@ -231,76 +283,10 @@ struct PostGalleryViewer: View {
         .allowsHitTesting(false)
     }
 
-    @ViewBuilder
-    private func imagePage(
-        for post: BooruPost,
-        in geometry: GeometryProxy
-    ) -> some View {
-        let isCurrent = post.globalID == selectedPostID
-        let fittedSize = fittedImageSize(for: post, in: geometry.size)
-
-        ZoomableImageView(
-            url: post.viewerURL,
-            imageOverride: upgradedPostID == post.globalID ? upgradedImage : nil,
-            fittedSize: fittedSize,
-            viewportSize: geometry.size,
-            loadPriority: isCurrent ? .high : .background,
-            onZoomChanged: { zoomed in
-                guard isCurrent else { return }
-                Task { @MainActor in
-                    isZoomed = zoomed
-                }
-            },
-            onImageLoaded: {
-                guard post.globalID == selectedPostID else { return }
-                prefetchAdjacentImages(around: selectedIndex)
-            },
-            onTap: isCurrent && !isZoomed
-                ? { toggleChrome() }
-                : nil,
-            onRequestFullImage: isCurrent
-                ? { requestFullImage(for: post) }
-                : nil
-        )
-        .frame(width: geometry.size.width, height: geometry.size.height)
-        .allowsHitTesting(isCurrent)
-    }
-
     private func toggleChrome() {
         withAnimation(.easeInOut(duration: 0.25)) {
             showChrome.toggle()
         }
-    }
-
-    private var navigationGesture: some Gesture {
-        DragGesture(minimumDistance: 20)
-            .onChanged { value in
-                let vertical = value.translation.height
-                let horizontal = value.translation.width
-                guard abs(vertical) > abs(horizontal), vertical > 0 else { return }
-
-                dismissOffset = vertical
-            }
-            .onEnded { value in
-                let vertical = value.translation.height
-                let horizontal = value.translation.width
-                let isVertical = abs(vertical) > abs(horizontal)
-
-                guard isVertical, vertical > 0 else {
-                    dismissOffset = 0
-                    return
-                }
-
-                let shouldDismiss = vertical > 120
-                    || value.predictedEndTranslation.height > 200
-                if shouldDismiss {
-                    onDismiss()
-                } else {
-                    withAnimation(.spring(response: 0.35, dampingFraction: 0.82)) {
-                        dismissOffset = 0
-                    }
-                }
-            }
     }
 
     private func prepareExport(for currentPost: BooruPost) async {
@@ -320,7 +306,7 @@ struct PostGalleryViewer: View {
         }
 
         let imageAspect = CGFloat(currentPost.width) / CGFloat(currentPost.height)
-        let containerAspect = size.width / size.height
+        let containerAspect = size.width / max(size.height, 1)
 
         if imageAspect > containerAspect {
             let width = size.width
@@ -341,11 +327,20 @@ struct PostGalleryViewer: View {
         }
 
         model.resolvePostTags(for: post)
+        requestFullQualityIfNeeded(for: post)
 
         Task {
             await model.loadMorePostsIfNeeded(nearPostID: post.globalID)
             onPostsUpdated()
         }
+    }
+
+    private func requestFullQualityIfNeeded(for post: BooruPost) {
+        guard settings.loadFullQualityInViewer else { return }
+#if os(iOS)
+        requestFullImage(for: post)
+#endif
+        // macOS: MacGalleryPage handles auto-load via `autoLoadFullQuality`.
     }
 
     private func prefetchAdjacentImages(around index: Int) {
@@ -360,7 +355,6 @@ struct PostGalleryViewer: View {
     private func moveTo(offset delta: Int) {
         let next = selectedIndex + delta
         guard posts.indices.contains(next) else { return }
-
         isZoomed = false
         selectedPostID = posts[next].globalID
     }

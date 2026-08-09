@@ -18,9 +18,9 @@ enum RatingFilter: String, CaseIterable, Identifiable, Sendable {
 
     var description: String {
         switch self {
-        case .all: "Safe, questionable, and explicit posts."
-        case .hideExplicit: "Safe and questionable posts only."
-        case .safeOnly: "Only safe posts."
+        case .all: "Safe, sensitive, questionable, and explicit posts."
+        case .hideExplicit: "Hides explicit; keeps safe, sensitive, and questionable."
+        case .safeOnly: "Only general/safe posts (Danbooru sensitive is hidden)."
         }
     }
 
@@ -56,9 +56,20 @@ final class AppSettingsStore {
         }
     }
 
+    /// When enabled, the fullscreen viewer fetches `fileURL` immediately instead of
+    /// waiting for pinch / double-tap. Off by default to save bandwidth.
+    var loadFullQualityInViewer: Bool {
+        didSet {
+            guard loadFullQualityInViewer != oldValue else { return }
+            UserDefaults.standard.set(loadFullQualityInViewer, forKey: Keys.loadFullQualityInViewer)
+            revision += 1
+        }
+    }
+
     private enum Keys {
         static let galleryTilingMode = "BooruVerse.galleryTilingMode"
         static let ratingFilter = "BooruVerse.ratingFilter"
+        static let loadFullQualityInViewer = "BooruVerse.loadFullQualityInViewer"
     }
 
     private init() {
@@ -79,5 +90,7 @@ final class AppSettingsStore {
         } else {
             ratingFilter = .all
         }
+
+        loadFullQualityInViewer = UserDefaults.standard.bool(forKey: Keys.loadFullQualityInViewer)
     }
 }

@@ -1,6 +1,6 @@
 import Foundation
 
-struct BooruPool: Identifiable, Hashable, Sendable {
+nonisolated struct BooruPool: Identifiable, Hashable, Sendable {
     /// Host of the server this pool came from.
     let serverID: String
     /// Native (per-server) pool id.

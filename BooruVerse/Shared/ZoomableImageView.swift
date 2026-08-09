@@ -58,9 +58,11 @@ struct ZoomableImageView: View {
                                 .offset(clampedOffset(viewportSize: viewport, contentSize: content))
                         }
                     }
+                    // Pan only while zoomed so gallery page-turn can receive drags at 1x.
+                    .gesture(zoomGesture(viewportSize: viewport, contentSize: content))
                     .gesture(
-                        zoomGesture(viewportSize: viewport, contentSize: content)
-                            .simultaneously(with: panGesture(viewportSize: viewport, contentSize: content))
+                        panGesture(viewportSize: viewport, contentSize: content),
+                        isEnabled: scale > 1.01
                     )
                     .overlay {
                         if failed, displayImage == nil {
@@ -97,12 +99,10 @@ struct ZoomableImageView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        // Size changes must not implicitly animate / stretch the platform zoom view.
+        .transaction { $0.animation = nil }
         .task(id: url?.absoluteString ?? "nil") {
             await load(priority: loadPriority)
-        }
-        .onChange(of: loadPriority) { _, newPriority in
-            // Boost in-flight work without cancelling/restarting the load task.
-            RemoteImageLoaderBridge.boostPriority(for: url, to: newPriority, maxPixelSize: nil)
         }
     }
 
@@ -274,29 +274,30 @@ struct ZoomableImageView: View {
     private func load(priority: RemoteImagePriority) async {
         GalleryDebug.log("ZoomableImageView load start", url: url)
         failed = false
-        resetTransform(animated: false)
 
         guard let url else {
             platformImage = nil
             failed = true
+            resetTransform(animated: false)
             GalleryDebug.log("ZoomableImageView no url")
             return
         }
 
         if let cached = await RemoteImageLoaderBridge.cachedImage(for: url) {
             GalleryDebug.log("ZoomableImageView cache hit", url: url)
+            // Keep zoom/pan when the same URL reloads (resize / priority changes).
             platformImage = cached
             onImageLoaded?()
             return
         }
 
-        // Keep any already-shown image while a new network fetch runs (avoids flicker
-        // when the view is recycled). Clear only after a definitive failure below.
+        if platformImage == nil {
+            resetTransform(animated: false)
+        }
+
         guard let image = await RemoteImageLoaderBridge.load(url: url, priority: priority) else {
             GalleryDebug.log("ZoomableImageView load failed", url: url)
-            if platformImage == nil {
-                failed = true
-            }
+            failed = true
             return
         }
 
@@ -372,11 +373,15 @@ private struct ZoomableScrollImageView: UIViewRepresentable {
             && viewportSize.height > 0
         coordinator.viewportSize = viewportSize
 
+        // Kill UIView animations that stretch the image during SwiftUI size transitions.
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        scrollView.transform = .identity
         coordinator.apply(image: image, in: scrollView)
-
         if viewportChanged {
-            coordinator.scheduleRelayout(in: scrollView)
+            coordinator.layoutImage(in: scrollView, force: true)
         }
+        CATransaction.commit()
     }
 
     final class Coordinator: NSObject, UIScrollViewDelegate, UIGestureRecognizerDelegate {
@@ -604,7 +609,7 @@ private struct ZoomableScrollImageView: UIViewRepresentable {
             )
         }
 
-        private func layoutImage(in scrollView: UIScrollView, force: Bool) {
+        func layoutImage(in scrollView: UIScrollView, force: Bool) {
             guard let imageView, let image = imageView.image else { return }
 
             let bounds = scrollView.bounds.size

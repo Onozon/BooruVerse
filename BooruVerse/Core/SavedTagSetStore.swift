@@ -31,13 +31,19 @@ final class SavedTagSetStore {
         loadIfNeeded()
     }
 
-    func save(name: String, tags: [String]) {
+    @discardableResult
+    func save(name: String, tags: [String], addToPersonal: Bool = false) -> SavedTagSet? {
         let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedName.isEmpty, !tags.isEmpty else { return }
+        guard !trimmedName.isEmpty, !tags.isEmpty else { return nil }
         loadIfNeeded()
-        sets.insert(SavedTagSet(name: trimmedName, tags: tags), at: 0)
+        let set = SavedTagSet(name: trimmedName, tags: tags)
+        sets.insert(set, at: 0)
         persist()
         revision += 1
+        if addToPersonal {
+            PersonalFeedStore.shared.setPersonal(set, enabled: true)
+        }
+        return set
     }
 
     func delete(_ set: SavedTagSet) {
@@ -45,6 +51,7 @@ final class SavedTagSetStore {
         sets.removeAll { $0.id == set.id }
         persist()
         revision += 1
+        PersonalFeedStore.shared.remove(id: set.id)
     }
 
     func reloadFromDisk() {
