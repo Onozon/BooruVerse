@@ -1,6 +1,10 @@
-# BooruVerse
+<p align="center">
+  <img src="Design/Logo/booruverse-icon.png" alt="BooruVerse" width="160" height="160">
+</p>
 
-A native Apple app for browsing image boards — several at once, in one feed.
+<h1 align="center">BooruVerse</h1>
+
+<p align="center">A native Apple app for browsing image boards — several at once, in one feed.</p>
 
 BooruVerse talks to Moebooru, Danbooru 2.x, and Gelbooru APIs. Flip on the hosts you care about, search with tags, and flip through posts without hopping between sites.
 
