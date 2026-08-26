@@ -46,7 +46,10 @@ Item {
             height: parent.height - Theme.captionHeight
             remoteUrl: root.displayUrl
             maxPx: root.upgrade ? 1600 : 480
+            keepCached: false
             fillMode: Image.PreserveAspectFit
+            // PostGrid resumes only cells near the viewport.
+            paused: true
 
             Rectangle {
                 visible: thumb.status !== Image.Ready
@@ -91,6 +94,7 @@ Item {
     }
 
     TapHandler {
+        enabled: !App.peekOpen && !App.viewerOpen
         acceptedButtons: Qt.LeftButton | Qt.RightButton
         grabPermissions: PointerHandler.ApprovesTakeOverByFlickable
                          | PointerHandler.ApprovesTakeOverByParent

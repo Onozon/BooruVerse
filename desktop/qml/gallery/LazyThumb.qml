@@ -7,6 +7,7 @@ Item {
     property int maxPx: 480
     property int debounceMs: 56
     property bool paused: false
+    property bool keepCached: false
     property alias fillMode: image.fillMode
     property alias smooth: image.smooth
     readonly property alias status: image.status
@@ -62,7 +63,8 @@ Item {
         id: image
         anchors.fill: parent
         asynchronous: true
-        cache: true
+        // Grid thumbs must not pin every decoded pixmap in Qt's shared image cache.
+        cache: root.keepCached
         sourceSize.width: root.maxPx
         sourceSize.height: root.maxPx
     }

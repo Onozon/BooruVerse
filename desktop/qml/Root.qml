@@ -25,7 +25,9 @@ Item {
         anchors.leftMargin: root.padLeft
         anchors.rightMargin: root.padRight
         visible: !App.viewerOpen
-        enabled: !App.viewerOpen
+        // Block grid/sidebar input while Peek is open — on Windows TapHandlers
+        // under a translucent overlay can still receive presses.
+        enabled: !App.viewerOpen && !App.peekOpen
 
         TabBarTop {
             width: parent.width

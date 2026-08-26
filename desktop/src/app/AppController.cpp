@@ -6,6 +6,7 @@
 #include "api/ServerProbe.h"
 #include "app/PostListModel.h"
 #include "app/SimpleListModels.h"
+#include "app/ThumbImageProvider.h"
 #include "core/DownloadStore.h"
 #include "core/FavoriteStore.h"
 #include "core/GalleryLayout.h"
@@ -173,6 +174,9 @@ void AppController::setTab(int tab) {
     if (m_tab != Settings)
         stash();
     m_tab = next;
+    // Drop decoded thumbnails when leaving a gallery tab so inactive stacks
+    // do not keep hundreds of bitmaps resident (matches Apple purgeDecodedImages intent).
+    ThumbImageProvider::purgeCache();
     emit tabChanged();
     emit settingsChanged();
     if (m_tab != Settings) {

@@ -9,14 +9,24 @@ Item {
     visible: App.peekOpen || opacity > 0.01
     opacity: App.peekOpen ? 1 : 0
     z: 9
+    // Keep consuming input through the fade-out so underlying cells stay inert.
+    enabled: visible
     Behavior on opacity { NumberAnimation { duration: 160 } }
 
     Rectangle {
+        id: dimmer
         anchors.fill: parent
         color: "#73000000"
+        z: 0
+
         MouseArea {
             anchors.fill: parent
+            acceptedButtons: Qt.LeftButton | Qt.RightButton | Qt.MiddleButton
+            hoverEnabled: true
+            preventStealing: true
             onClicked: App.closePeek()
+            onPressed: (mouse) => { mouse.accepted = true }
+            onWheel: (wheel) => { wheel.accepted = true }
         }
     }
 
@@ -31,8 +41,13 @@ Item {
         color: Theme.surface
         anchors.centerIn: parent
         clip: true
+        z: 1
 
-        MouseArea { anchors.fill: parent }
+        MouseArea {
+            anchors.fill: parent
+            acceptedButtons: Qt.LeftButton | Qt.RightButton | Qt.MiddleButton
+            onPressed: (mouse) => { mouse.accepted = true }
+        }
 
         ColumnLayout {
             visible: App.compact

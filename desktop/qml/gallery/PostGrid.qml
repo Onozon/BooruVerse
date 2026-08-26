@@ -11,6 +11,7 @@ Item {
     readonly property int gap: Theme.gridSpacing
     readonly property real innerWidth: Math.max(0, width - pad * 2)
     readonly property bool upgrade: App.layoutColumns === 1
+    readonly property real overscan: Math.max(height * 0.75, 480)
 
     function ancestorVisible() {
         for (var item = root; item; item = item.parent) {
@@ -24,28 +25,68 @@ Item {
         restorePending = true
         flick.contentY = Math.max(0, y)
         restorePending = false
+        Qt.callLater(updateThumbVisibility)
     }
 
     function relayout() {
         if (!ancestorVisible() || innerWidth < 8)
             return
         App.prepareLayout(innerWidth)
+        Qt.callLater(updateThumbVisibility)
+    }
+
+    function updateThumbVisibility() {
+        if (!ancestorVisible() || !flick.visible) {
+            for (let i = 0; i < cells.count; ++i) {
+                const cell = cells.itemAt(i)
+                if (cell)
+                    cell.pauseThumb()
+            }
+            return
+        }
+        const top = flick.contentY - root.overscan
+        const bottom = flick.contentY + flick.height + root.overscan
+        for (let i = 0; i < cells.count; ++i) {
+            const cell = cells.itemAt(i)
+            if (!cell)
+                continue
+            const onScreen = cell.y + cell.height >= top && cell.y <= bottom
+            if (onScreen)
+                cell.resumeThumb()
+            else
+                cell.pauseThumb()
+        }
     }
 
     onInnerWidthChanged: relayout()
-    onVisibleChanged: if (visible) Qt.callLater(relayout)
+    onVisibleChanged: {
+        if (visible)
+            Qt.callLater(relayout)
+        else
+            updateThumbVisibility()
+    }
     Component.onCompleted: Qt.callLater(relayout)
 
     Connections {
         target: App
-        function onLayoutChanged() {}
+        function onLayoutChanged() { Qt.callLater(root.updateThumbVisibility) }
         function onSettingsChanged() { Qt.callLater(root.relayout) }
         function onTabChanged() { Qt.callLater(root.relayout) }
         function onCompactChanged() { Qt.callLater(root.relayout) }
     }
     Connections {
         target: App.posts
-        function onCountChanged() { root.relayout() }
+        function onCountChanged() {
+            root.relayout()
+            visibilityTimer.restart()
+        }
+    }
+
+    Timer {
+        id: visibilityTimer
+        interval: 48
+        repeat: false
+        onTriggered: root.updateThumbVisibility()
     }
 
     Flickable {
@@ -64,6 +105,7 @@ Item {
         pressDelay: Qt.platform.os === "android" ? 80 : 0
 
         Repeater {
+            id: cells
             model: App.posts
             delegate: PostCell {
                 id: cell
@@ -80,6 +122,7 @@ Item {
                 selected: model.selected
                 duplicateCount: model.duplicateCount
                 aspect: model.aspectRatio
+                Component.onCompleted: visibilityTimer.restart()
                 onTapped: {
                     root.currentIndex = index
                     App.openViewer(index)
@@ -95,9 +138,12 @@ Item {
                 return
             if (!restorePending)
                 App.scrollOffset = contentY
+            visibilityTimer.restart()
             if (contentHeight > 0 && contentY > contentHeight - height - 480)
                 App.loadMore()
         }
+        onHeightChanged: visibilityTimer.restart()
+        onWidthChanged: visibilityTimer.restart()
 
         WheelHandler {
             acceptedModifiers: Qt.ControlModifier
@@ -125,6 +171,8 @@ Item {
         Component.onCompleted: {
             if (App.scrollOffset > 0)
                 Qt.callLater(function () { root.restoreScroll(App.scrollOffset) })
+            else
+                visibilityTimer.restart()
         }
 
         Keys.onPressed: function (event) {
@@ -140,6 +188,7 @@ Item {
                 return
             event.accepted = true
             flick.contentY = Math.max(0, App.itemY(root.currentIndex) - 40)
+            visibilityTimer.restart()
         }
     }
 

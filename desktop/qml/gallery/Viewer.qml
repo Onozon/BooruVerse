@@ -283,41 +283,83 @@ Rectangle {
         color: "#E6000000"
         Behavior on opacity { NumberAnimation { duration: 160 } }
 
-        Row {
-            anchors.centerIn: parent
-            spacing: App.compact ? 8 : 16
-            height: 36
+        Flickable {
+            id: actionFlick
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.top: parent.top
+            anchors.leftMargin: 8
+            anchors.rightMargin: 8
+            anchors.topMargin: 8
+            height: 40
+            clip: true
+            boundsBehavior: Flickable.StopAtBounds
+            contentWidth: Math.max(width, actionRow.implicitWidth)
+            contentHeight: height
+            interactive: contentWidth > width + 1
+            flickableDirection: Flickable.HorizontalFlick
 
-            HitButton {
-                glyph: "chevronLeft"
-                glyphColor: "white"
-                onClicked: App.viewerMove(-1)
-            }
-            HitButton {
-                glyph: App.viewerFavorited ? "favoritesFill" : "favorites"
-                glyphColor: App.viewerFavorited ? Theme.danger : "white"
-                onClicked: App.toggleViewerFavorite()
-            }
-            HitButton {
-                glyph: "save"
-                glyphColor: "white"
-                onClicked: saveDialog.open()
-            }
-            HitButton {
-                visible: App.viewerHasOriginal
-                text: "Original"
-                glyphColor: "white"
-                onClicked: App.loadViewerOriginal()
-            }
-            HitButton {
-                glyph: "site"
-                glyphColor: "white"
-                onClicked: App.openViewerSite()
-            }
-            HitButton {
-                glyph: "chevronRight"
-                glyphColor: "white"
-                onClicked: App.viewerMove(1)
+            Row {
+                id: actionRow
+                spacing: 6
+                height: parent.height
+                // Center when the row fits; otherwise start at 0 and allow flick.
+                x: Math.max(0, (actionFlick.width - implicitWidth) / 2)
+
+                HitButton {
+                    glyph: "chevronLeft"
+                    glyphColor: "white"
+                    minSize: 36
+                    width: 36
+                    height: 36
+                    anchors.verticalCenter: parent.verticalCenter
+                    onClicked: App.viewerMove(-1)
+                }
+                HitButton {
+                    glyph: App.viewerFavorited ? "favoritesFill" : "favorites"
+                    glyphColor: App.viewerFavorited ? Theme.danger : "white"
+                    minSize: 36
+                    width: 36
+                    height: 36
+                    anchors.verticalCenter: parent.verticalCenter
+                    onClicked: App.toggleViewerFavorite()
+                }
+                HitButton {
+                    glyph: "save"
+                    glyphColor: "white"
+                    minSize: 36
+                    width: 36
+                    height: 36
+                    anchors.verticalCenter: parent.verticalCenter
+                    onClicked: saveDialog.open()
+                }
+                HitButton {
+                    visible: App.viewerHasOriginal
+                    text: "Original"
+                    glyphColor: "white"
+                    minSize: 36
+                    height: 36
+                    anchors.verticalCenter: parent.verticalCenter
+                    onClicked: App.loadViewerOriginal()
+                }
+                HitButton {
+                    glyph: "site"
+                    glyphColor: "white"
+                    minSize: 36
+                    width: 36
+                    height: 36
+                    anchors.verticalCenter: parent.verticalCenter
+                    onClicked: App.openViewerSite()
+                }
+                HitButton {
+                    glyph: "chevronRight"
+                    glyphColor: "white"
+                    minSize: 36
+                    width: 36
+                    height: 36
+                    anchors.verticalCenter: parent.verticalCenter
+                    onClicked: App.viewerMove(1)
+                }
             }
         }
     }
