@@ -119,3 +119,14 @@ void PostListModel::refreshSelection() {
     if (!m_posts.isEmpty())
         emit dataChanged(this->index(0), this->index(m_posts.size() - 1), {SelectedRole});
 }
+
+QVariantMap PostListModel::get(int row) const {
+    if (row < 0 || row >= m_posts.size())
+        return {};
+    const QModelIndex idx = index(row);
+    QVariantMap map;
+    const auto roles = roleNames();
+    for (auto it = roles.cbegin(); it != roles.cend(); ++it)
+        map.insert(QString::fromUtf8(it.value()), data(idx, it.key()));
+    return map;
+}

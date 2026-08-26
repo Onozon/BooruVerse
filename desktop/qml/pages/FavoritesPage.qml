@@ -7,6 +7,11 @@ Item {
     readonly property int islandMargin: 10
     readonly property int sidebarWidth: Math.max(Theme.sidebarMin, Math.min(Theme.sidebarMax, 280))
 
+    Component {
+        id: postGridComponent
+        PostGrid {}
+    }
+
     Item {
         anchors.fill: parent
         visible: !App.compact
@@ -26,11 +31,13 @@ Item {
             FolderSidebar { anchors.fill: parent }
         }
 
-        PostGrid {
+        Loader {
             anchors.left: folderPane.right
             anchors.right: parent.right
             anchors.top: parent.top
             anchors.bottom: parent.bottom
+            active: !App.compact
+            sourceComponent: postGridComponent
         }
     }
 
@@ -53,9 +60,11 @@ Item {
                 onLeftClicked: App.favoritesOnSidebar = true
                 onRefreshClicked: App.reload()
             }
-            PostGrid {
+            Loader {
                 width: parent.width
                 height: parent.height - 52
+                active: App.compact
+                sourceComponent: postGridComponent
             }
         }
 

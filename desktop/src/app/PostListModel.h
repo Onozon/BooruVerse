@@ -42,6 +42,8 @@ public:
     void refreshFavorites();
     void refreshSelection();
 
+    Q_INVOKABLE QVariantMap get(int row) const;
+
 signals:
     void countChanged();
 

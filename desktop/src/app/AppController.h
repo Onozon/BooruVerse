@@ -195,6 +195,8 @@ public:
     Q_INVOKABLE double itemX(int index) const;
     Q_INVOKABLE double itemY(int index) const;
     Q_INVOKABLE double itemH(int index) const;
+    /// Post indices whose layout frames intersect [top, bottom] (content coordinates).
+    Q_INVOKABLE QVariantList indexesInYRange(double top, double bottom) const;
     Q_INVOKABLE void toggleSelectedAt(int index);
     Q_INVOKABLE void openPeek(int index);
     Q_INVOKABLE void closePeek();

@@ -11,7 +11,11 @@ Item {
     readonly property int gap: Theme.gridSpacing
     readonly property real innerWidth: Math.max(0, width - pad * 2)
     readonly property bool upgrade: App.layoutColumns === 1
-    readonly property real overscan: Math.max(height * 0.75, 480)
+    // Keep enough pooled cells for viewport + modest overscan; never 1:1 with post count.
+    readonly property real overscan: Math.max(height * 0.45, 320)
+    readonly property int pageSize: 40
+    readonly property int loadMoreLeadPosts: Math.max(1, Math.floor(pageSize / 2))
+    readonly property int poolSize: Math.max(48, Math.min(160, Math.ceil((height + overscan * 2) / 72) * Math.max(App.layoutColumns, 1) + 16))
 
     function ancestorVisible() {
         for (var item = root; item; item = item.parent) {
@@ -25,51 +29,126 @@ Item {
         restorePending = true
         flick.contentY = Math.max(0, y)
         restorePending = false
-        Qt.callLater(updateThumbVisibility)
+        Qt.callLater(syncPool)
     }
 
     function relayout() {
         if (!ancestorVisible() || innerWidth < 8)
             return
         App.prepareLayout(innerWidth)
-        Qt.callLater(updateThumbVisibility)
+        Qt.callLater(syncPool)
     }
 
-    function updateThumbVisibility() {
+    function maybeLoadMore() {
+        if (!ancestorVisible() || !flick.visible || App.loading)
+            return
+        const count = App.posts.count
+        if (count <= 0)
+            return
+        const triggerIndex = Math.max(0, count - root.loadMoreLeadPosts)
+        if (flick.contentY + flick.height >= App.itemY(triggerIndex))
+            App.loadMore()
+    }
+
+    function bindCell(cell, postIndex) {
+        const post = App.posts.get(postIndex)
+        cell.postIndex = postIndex
+        cell.x = App.itemX(postIndex)
+        cell.y = App.itemY(postIndex)
+        cell.width = App.layoutColumnWidth
+        cell.height = App.itemH(postIndex)
+        cell.upgrade = root.upgrade
+        cell.previewUrl = post.previewUrl || ""
+        cell.sampleUrl = post.sampleUrl || ""
+        cell.caption = (post.serverId || "") + " #" + (post.postId || "")
+        cell.borderColor = post.borderColor || ""
+        cell.favorited = !!post.favorited
+        cell.selected = !!post.selected
+        cell.duplicateCount = post.duplicateCount || 1
+        cell.aspect = post.aspectRatio || 1
+        cell.visible = true
+        cell.resumeThumb()
+    }
+
+    function clearCell(cell) {
+        if (!cell)
+            return
+        cell.pauseThumb()
+        cell.postIndex = -1
+        cell.visible = false
+    }
+
+    function refreshCellMeta(cell) {
+        if (!cell || cell.postIndex < 0)
+            return
+        const post = App.posts.get(cell.postIndex)
+        cell.favorited = !!post.favorited
+        cell.selected = !!post.selected
+        cell.borderColor = post.borderColor || ""
+        cell.duplicateCount = post.duplicateCount || 1
+    }
+
+    function syncPool() {
         if (!ancestorVisible() || !flick.visible) {
-            for (let i = 0; i < cells.count; ++i) {
-                const cell = cells.itemAt(i)
-                if (cell)
-                    cell.pauseThumb()
-            }
+            for (let i = 0; i < cells.count; ++i)
+                clearCell(cells.itemAt(i))
             return
         }
+
         const top = flick.contentY - root.overscan
         const bottom = flick.contentY + flick.height + root.overscan
-        for (let i = 0; i < cells.count; ++i) {
-            const cell = cells.itemAt(i)
+        const needed = App.indexesInYRange(top, bottom)
+        const neededSet = {}
+        for (let n = 0; n < needed.length; ++n)
+            neededSet[needed[n]] = true
+
+        const kept = {}
+        const freeSlots = []
+        for (let s = 0; s < cells.count; ++s) {
+            const cell = cells.itemAt(s)
             if (!cell)
                 continue
-            const onScreen = cell.y + cell.height >= top && cell.y <= bottom
-            if (onScreen)
+            const idx = cell.postIndex
+            if (idx >= 0 && neededSet[idx]) {
+                kept[idx] = s
+                cell.x = App.itemX(idx)
+                cell.y = App.itemY(idx)
+                cell.width = App.layoutColumnWidth
+                cell.height = App.itemH(idx)
+                cell.upgrade = root.upgrade
                 cell.resumeThumb()
-            else
-                cell.pauseThumb()
+            } else {
+                clearCell(cell)
+                freeSlots.push(s)
+            }
         }
+
+        for (let n = 0; n < needed.length; ++n) {
+            const idx = needed[n]
+            if (kept[idx] !== undefined)
+                continue
+            if (freeSlots.length === 0)
+                break
+            const slot = freeSlots.pop()
+            bindCell(cells.itemAt(slot), idx)
+        }
+
+        maybeLoadMore()
     }
 
     onInnerWidthChanged: relayout()
+    onPoolSizeChanged: Qt.callLater(syncPool)
     onVisibleChanged: {
         if (visible)
             Qt.callLater(relayout)
         else
-            updateThumbVisibility()
+            syncPool()
     }
     Component.onCompleted: Qt.callLater(relayout)
 
     Connections {
         target: App
-        function onLayoutChanged() { Qt.callLater(root.updateThumbVisibility) }
+        function onLayoutChanged() { Qt.callLater(root.syncPool) }
         function onSettingsChanged() { Qt.callLater(root.relayout) }
         function onTabChanged() { Qt.callLater(root.relayout) }
         function onCompactChanged() { Qt.callLater(root.relayout) }
@@ -80,13 +159,17 @@ Item {
             root.relayout()
             visibilityTimer.restart()
         }
+        function onDataChanged() {
+            for (let i = 0; i < cells.count; ++i)
+                root.refreshCellMeta(cells.itemAt(i))
+        }
     }
 
     Timer {
         id: visibilityTimer
-        interval: 48
+        interval: 32
         repeat: false
-        onTriggered: root.updateThumbVisibility()
+        onTriggered: root.syncPool()
     }
 
     Flickable {
@@ -103,33 +186,25 @@ Item {
         visible: App.posts.count > 0
         focus: true
         pressDelay: Qt.platform.os === "android" ? 80 : 0
+        // Avoid retaining offscreen item textures in the flickable layer.
+        pixelAligned: true
 
         Repeater {
             id: cells
-            model: App.posts
+            model: root.poolSize
             delegate: PostCell {
-                id: cell
-                x: App.itemX(index) + App.layoutHeight * 0
-                y: App.itemY(index) + App.layoutHeight * 0
-                width: App.layoutColumnWidth
-                height: App.itemH(index) + App.layoutHeight * 0
+                property int postIndex: -1
+                visible: false
                 upgrade: root.upgrade
-                previewUrl: model.previewUrl
-                sampleUrl: model.sampleUrl
-                caption: model.serverId + " #" + model.postId
-                borderColor: model.borderColor
-                favorited: model.favorited
-                selected: model.selected
-                duplicateCount: model.duplicateCount
-                aspect: model.aspectRatio
-                Component.onCompleted: visibilityTimer.restart()
                 onTapped: {
-                    root.currentIndex = index
-                    App.openViewer(index)
+                    if (postIndex < 0)
+                        return
+                    root.currentIndex = postIndex
+                    App.openViewer(postIndex)
                 }
-                onPeeked: App.openPeek(index)
-                onSelectToggled: App.toggleSelectedAt(index)
-                onFavoriteToggled: App.toggleFavoriteAt(index)
+                onPeeked: if (postIndex >= 0) App.openPeek(postIndex)
+                onSelectToggled: if (postIndex >= 0) App.toggleSelectedAt(postIndex)
+                onFavoriteToggled: if (postIndex >= 0) App.toggleFavoriteAt(postIndex)
             }
         }
 
@@ -139,8 +214,7 @@ Item {
             if (!restorePending)
                 App.scrollOffset = contentY
             visibilityTimer.restart()
-            if (contentHeight > 0 && contentY > contentHeight - height - 480)
-                App.loadMore()
+            root.maybeLoadMore()
         }
         onHeightChanged: visibilityTimer.restart()
         onWidthChanged: visibilityTimer.restart()

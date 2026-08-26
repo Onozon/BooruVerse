@@ -4,24 +4,28 @@
 
 #include <QBuffer>
 #include <QCache>
+#include <QCoreApplication>
 #include <QHash>
 #include <QImage>
 #include <QImageReader>
-#include <QMutex>
-#include <QMutexLocker>
+#include <QMetaObject>
 #include <QNetworkReply>
 #include <QNetworkRequest>
+#include <QPointer>
 #include <QQuickTextureFactory>
 #include <QQueue>
-#include <QTimer>
+#include <QThread>
+#include <QThreadPool>
 #include <QUrl>
+
+#include <atomic>
 
 namespace {
 
 constexpr int kDefaultMaxPx = 480;
 constexpr int kHardMaxPx = 1600;
-constexpr int kCacheCostLimit = 64 * 1024 * 1024;
-constexpr int kMaxInFlight = 6;
+constexpr int kCacheCostLimit = 32 * 1024 * 1024;
+constexpr int kMaxInFlight = 5;
 
 QString jobKey(const QUrl &url, int maxPx) {
     return QString::number(maxPx) + QLatin1Char('|') + url.toString();
@@ -52,7 +56,6 @@ QImage decodeScaled(const QByteArray &data, int maxPx) {
         return reader.read();
     }
 
-    // Unknown dimensions: decode then downscale so a huge payload cannot blow RAM.
     QImage image = reader.read();
     if (image.isNull())
         return {};
@@ -67,12 +70,9 @@ int imageCost(const QImage &image) {
     return int(qBound(qsizetype(1), bytes, qsizetype(INT_MAX)));
 }
 
-class ThumbEngine;
-
 class ThumbWaiter final : public QQuickImageResponse {
 public:
     ~ThumbWaiter() override;
-
     void cancel() override;
     QQuickTextureFactory *textureFactory() const override {
         return m_image.isNull() ? nullptr : QQuickTextureFactory::textureFactoryForImage(m_image);
@@ -80,28 +80,37 @@ public:
     QString errorString() const override { return m_error; }
 
     void complete(const QImage &image, const QString &error) {
-        if (m_done)
+        if (m_done.exchange(true))
             return;
-        m_done = true;
         m_image = image;
         m_error = error;
         Q_EMIT finished();
     }
 
     QString key;
-    bool cancelled = false;
+    std::atomic_bool cancelled{false};
 
 private:
     QImage m_image;
     QString m_error;
-    bool m_done = false;
+    std::atomic_bool m_done{false};
 };
 
 class ThumbEngine final : public QObject {
+    Q_OBJECT
 public:
+    static ThumbEngine *s_instance;
+
     static ThumbEngine &instance() {
-        static ThumbEngine engine;
-        return engine;
+        Q_ASSERT(s_instance);
+        return *s_instance;
+    }
+
+    static void ensure() {
+        Q_ASSERT(QCoreApplication::instance());
+        Q_ASSERT(QThread::currentThread() == QCoreApplication::instance()->thread());
+        if (!s_instance)
+            s_instance = new ThumbEngine(QCoreApplication::instance());
     }
 
     QQuickImageResponse *request(const QUrl &url, int maxPx) {
@@ -110,100 +119,140 @@ public:
         waiter->key = jobKey(url, maxPx);
 
         if (url.isEmpty()) {
-            QTimer::singleShot(0, waiter, [waiter]() { waiter->complete({}, QStringLiteral("empty")); });
+            QMetaObject::invokeMethod(
+                this, [waiter]() { waiter->complete({}, QStringLiteral("empty")); }, Qt::QueuedConnection);
             return waiter;
         }
 
-        {
-            QMutexLocker lock(&m_mutex);
-            if (const QImage *cached = m_cache.object(waiter->key)) {
-                const QImage copy = *cached;
-                lock.unlock();
-                QTimer::singleShot(0, waiter, [waiter, copy]() { waiter->complete(copy, {}); });
-                return waiter;
-            }
-        }
-
-        Job *job = nullptr;
-        {
-            QMutexLocker lock(&m_mutex);
-            job = m_jobs.value(waiter->key);
-            if (!job) {
-                job = new Job;
-                job->url = url;
-                job->maxPx = maxPx;
-                job->key = waiter->key;
-                m_jobs.insert(waiter->key, job);
-                m_queued.enqueue(job);
-            }
-            job->waiters.append(waiter);
-        }
-        pump();
+        // QQuickAsyncImageProvider may call us from QQuickPixmapReader's thread.
+        // Never touch QNetworkAccessManager off the GUI thread — that freezes the app.
+        QMetaObject::invokeMethod(
+            this,
+            [this, waiter = QPointer<ThumbWaiter>(waiter), url, maxPx, key = waiter->key]() {
+                if (!waiter || waiter->cancelled)
+                    return;
+                handleRequest(waiter.data(), url, maxPx, key);
+            },
+            Qt::QueuedConnection);
         return waiter;
     }
 
-    void detach(ThumbWaiter *waiter) {
-        if (!waiter || waiter->key.isEmpty())
+    void dropWaiter(ThumbWaiter *waiter) {
+        if (!waiter)
             return;
-        Job *job = nullptr;
-        {
-            QMutexLocker lock(&m_mutex);
-            job = m_jobs.value(waiter->key);
-            if (!job)
-                return;
-            job->waiters.removeAll(waiter);
-            if (!job->waiters.isEmpty())
-                return;
-            if (job->reply) {
-                job->reply->abort();
-                return;
-            }
-            // Still queued: drop it so it never starts.
-            m_queued.removeAll(job);
-            m_jobs.remove(job->key);
-            delete job;
+        // Capture key before any queued hop — waiter may be destroyed by then.
+        const QString key = waiter->key;
+        const QPointer<ThumbWaiter> guard(waiter);
+        if (QThread::currentThread() != thread()) {
+            QMetaObject::invokeMethod(this, [this, key, guard]() { dropWaiterOnMain(key, guard); },
+                                      Qt::QueuedConnection);
+            return;
         }
+        dropWaiterOnMain(key, guard);
+    }
+
+    void dropWaiterOnMain(const QString &key, const QPointer<ThumbWaiter> &guard) {
+        Job *job = m_jobs.value(key);
+        if (!job)
+            return;
+        if (guard)
+            job->waiters.removeAll(guard);
+        job->waiters.removeAll(nullptr);
+        if (!job->waiters.isEmpty())
+            return;
+        if (job->reply) {
+            job->reply->abort();
+            return;
+        }
+        // Decode may already be running without a Job entry; nothing to abort here.
+        m_queued.removeAll(job);
+        m_jobs.remove(job->key);
+        delete job;
     }
 
     void purge() {
-        QMutexLocker lock(&m_mutex);
+        if (QThread::currentThread() != thread()) {
+            QMetaObject::invokeMethod(this, &ThumbEngine::purge, Qt::QueuedConnection);
+            return;
+        }
         m_cache.clear();
+    }
+
+    void deliverDecoded(const QString &key, const QImage &image, const QString &error,
+                        const QList<QPointer<ThumbWaiter>> &waiters) {
+        bool anyLive = false;
+        for (const QPointer<ThumbWaiter> &waiter : waiters) {
+            if (waiter && !waiter->cancelled)
+                anyLive = true;
+        }
+        if (!image.isNull() && anyLive)
+            m_cache.insert(key, new QImage(image), imageCost(image));
+
+        for (const QPointer<ThumbWaiter> &waiter : waiters) {
+            if (!waiter)
+                continue;
+            if (waiter->cancelled)
+                waiter->complete({}, QStringLiteral("cancelled"));
+            else
+                waiter->complete(image, error);
+        }
+
+        m_inFlight = qMax(0, m_inFlight - 1);
+        pump();
     }
 
 private:
     struct Job {
         QUrl url;
         QNetworkReply *reply = nullptr;
-        QList<ThumbWaiter *> waiters;
+        QList<QPointer<ThumbWaiter>> waiters;
         int maxPx = kDefaultMaxPx;
         QString key;
         bool started = false;
     };
 
-    ThumbEngine() {
+    explicit ThumbEngine(QObject *parent)
+        : QObject(parent) {
         m_cache.setMaxCost(kCacheCostLimit);
     }
 
-    void pump() {
-        QList<Job *> start;
-        {
-            QMutexLocker lock(&m_mutex);
-            while (m_inFlight < kMaxInFlight && !m_queued.isEmpty()) {
-                Job *job = m_queued.dequeue();
-                if (!job || job->started)
-                    continue;
-                if (job->waiters.isEmpty()) {
-                    m_jobs.remove(job->key);
-                    delete job;
-                    continue;
-                }
-                job->started = true;
-                ++m_inFlight;
-                start.append(job);
-            }
+    void handleRequest(ThumbWaiter *waiter, const QUrl &url, int maxPx, const QString &key) {
+        if (!waiter || waiter->cancelled)
+            return;
+
+        if (const QImage *cached = m_cache.object(key)) {
+            waiter->complete(*cached, {});
+            return;
         }
-        for (Job *job : start)
+
+        Job *job = m_jobs.value(key);
+        if (!job) {
+            job = new Job;
+            job->url = url;
+            job->maxPx = maxPx;
+            job->key = key;
+            m_jobs.insert(key, job);
+            m_queued.enqueue(job);
+        }
+        job->waiters.append(waiter);
+        pump();
+    }
+
+    void pump() {
+        while (m_inFlight < kMaxInFlight && !m_queued.isEmpty()) {
+            Job *job = m_queued.dequeue();
+            if (!job || job->started)
+                continue;
+            job->waiters.removeAll(nullptr);
+            if (job->waiters.isEmpty()) {
+                m_jobs.remove(job->key);
+                delete job;
+                continue;
+            }
+            job->started = true;
+            ++m_inFlight;
             beginNetwork(job);
+        }
     }
 
     void beginNetwork(Job *job) {
@@ -211,64 +260,66 @@ private:
         request.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("BooruVerse/1.3-desktop"));
         request.setAttribute(QNetworkRequest::CacheLoadControlAttribute, QNetworkRequest::PreferCache);
         request.setTransferTimeout(15000);
-        request.setPriority(job->maxPx > 800 ? QNetworkRequest::HighPriority : QNetworkRequest::LowPriority);
+        request.setPriority(job->maxPx > 800 ? QNetworkRequest::HighPriority : QNetworkRequest::NormalPriority);
 
         QNetworkReply *reply = HttpClient::instance().network()->get(request);
-        {
-            QMutexLocker lock(&m_mutex);
-            job->reply = reply;
+        job->reply = reply;
+        connect(reply, &QNetworkReply::finished, this, [this, job, reply]() { finishNetwork(job, reply); });
+    }
+
+    void finishNetwork(Job *job, QNetworkReply *reply) {
+        reply->deleteLater();
+
+        const QList<QPointer<ThumbWaiter>> waiters = job->waiters;
+        const QString key = job->key;
+        const int maxPx = job->maxPx;
+        m_jobs.remove(key);
+        delete job;
+
+        const int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        if (reply->error() == QNetworkReply::OperationCanceledError) {
+            completeWaiters(waiters, {}, QStringLiteral("cancelled"));
+            m_inFlight = qMax(0, m_inFlight - 1);
+            pump();
+            return;
         }
-        QObject::connect(reply, &QNetworkReply::finished, this, [this, job, reply]() {
-            finishJob(job, reply);
+        if (reply->error() != QNetworkReply::NoError) {
+            completeWaiters(waiters, {}, reply->errorString());
+            m_inFlight = qMax(0, m_inFlight - 1);
+            pump();
+            return;
+        }
+        if (status && (status < 200 || status >= 300)) {
+            completeWaiters(waiters, {}, QStringLiteral("HTTP %1").arg(status));
+            m_inFlight = qMax(0, m_inFlight - 1);
+            pump();
+            return;
+        }
+
+        const QByteArray bytes = reply->readAll();
+        // Keep m_inFlight reserved through decode so scroll storms cannot pile up.
+        QThreadPool::globalInstance()->start([this, key, bytes, maxPx, waiters]() {
+            const QImage image = decodeScaled(bytes, maxPx);
+            const QString error = image.isNull() ? QStringLiteral("decode") : QString();
+            QMetaObject::invokeMethod(
+                this,
+                [this, key, image, error, waiters]() { deliverDecoded(key, image, error, waiters); },
+                Qt::QueuedConnection);
         });
     }
 
-    void finishJob(Job *job, QNetworkReply *reply) {
-        reply->deleteLater();
-
-        QList<ThumbWaiter *> waiters;
-        QString key;
-        int maxPx = kDefaultMaxPx;
-        {
-            QMutexLocker lock(&m_mutex);
-            waiters = job->waiters;
-            key = job->key;
-            maxPx = job->maxPx;
-            m_jobs.remove(key);
-            if (job->started)
-                m_inFlight = qMax(0, m_inFlight - 1);
-            delete job;
-        }
-
-        QImage image;
-        QString error;
-        const int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
-        if (reply->error() == QNetworkReply::OperationCanceledError) {
-            error = QStringLiteral("cancelled");
-        } else if (reply->error() != QNetworkReply::NoError) {
-            error = reply->errorString();
-        } else if (status && (status < 200 || status >= 300)) {
-            error = QStringLiteral("HTTP %1").arg(status);
-        } else {
-            image = decodeScaled(reply->readAll(), maxPx);
-            if (image.isNull()) {
-                error = QStringLiteral("decode");
-            } else {
-                QMutexLocker lock(&m_mutex);
-                m_cache.insert(key, new QImage(image), imageCost(image));
-            }
-        }
-
-        for (ThumbWaiter *waiter : waiters) {
-            if (!waiter->cancelled)
-                waiter->complete(image, error);
-            else
+    static void completeWaiters(const QList<QPointer<ThumbWaiter>> &waiters, const QImage &image,
+                                const QString &error) {
+        for (const QPointer<ThumbWaiter> &waiter : waiters) {
+            if (!waiter)
+                continue;
+            if (waiter->cancelled)
                 waiter->complete({}, QStringLiteral("cancelled"));
+            else
+                waiter->complete(image, error);
         }
-        pump();
     }
 
-    QMutex m_mutex;
     QHash<QString, Job *> m_jobs;
     QQueue<Job *> m_queued;
     int m_inFlight = 0;
@@ -276,22 +327,30 @@ private:
 };
 
 ThumbWaiter::~ThumbWaiter() {
-    if (!m_done)
-        ThumbEngine::instance().detach(this);
+    if (!m_done) {
+        cancelled = true;
+        ThumbEngine::instance().dropWaiter(this);
+    }
 }
 
 void ThumbWaiter::cancel() {
-    if (cancelled || m_done)
+    if (cancelled.exchange(true) || m_done)
         return;
-    cancelled = true;
-    ThumbEngine::instance().detach(this);
+    ThumbEngine::instance().dropWaiter(this);
     complete({}, QStringLiteral("cancelled"));
 }
 
 } // namespace
 
+ThumbEngine *ThumbEngine::s_instance = nullptr;
+
+void ThumbImageProvider::ensureEngine() {
+    ThumbEngine::ensure();
+}
+
 void ThumbImageProvider::purgeCache() {
-    ThumbEngine::instance().purge();
+    if (ThumbEngine::s_instance)
+        ThumbEngine::instance().purge();
 }
 
 QQuickImageResponse *ThumbImageProvider::requestImageResponse(const QString &id, const QSize &requestedSize) {
@@ -308,3 +367,5 @@ QQuickImageResponse *ThumbImageProvider::requestImageResponse(const QString &id,
     const QUrl url(QUrl::fromPercentEncoding(encoded.toUtf8()));
     return ThumbEngine::instance().request(url, clampMaxPx(maxPx));
 }
+
+#include "ThumbImageProvider.moc"

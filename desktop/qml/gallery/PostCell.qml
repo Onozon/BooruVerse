@@ -18,8 +18,20 @@ Item {
     signal selectToggled()
     signal favoriteToggled()
 
-    function pauseThumb() { thumb.pause() }
-    function resumeThumb() { thumb.resume() }
+    property bool thumbActive: false
+
+    function pauseThumb() {
+        if (!thumbActive && thumb.paused)
+            return
+        thumbActive = false
+        thumb.pause()
+    }
+    function resumeThumb() {
+        if (thumbActive && !thumb.paused)
+            return
+        thumbActive = true
+        thumb.resume()
+    }
 
     readonly property url displayUrl: upgrade && String(sampleUrl).length > 0 ? sampleUrl : previewUrl
     readonly property int borderW: root.selected ? 4 : (root.borderColor.length ? 2 : 0)
@@ -45,7 +57,7 @@ Item {
             anchors.top: parent.top
             height: parent.height - Theme.captionHeight
             remoteUrl: root.displayUrl
-            maxPx: root.upgrade ? 1600 : 480
+            maxPx: root.upgrade ? 720 : 480
             keepCached: false
             fillMode: Image.PreserveAspectFit
             // PostGrid resumes only cells near the viewport.

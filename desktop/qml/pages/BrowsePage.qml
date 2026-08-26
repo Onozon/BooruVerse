@@ -7,6 +7,11 @@ Item {
     readonly property int islandMargin: 10
     readonly property int sidebarWidth: Math.max(Theme.sidebarMin, Math.min(Theme.sidebarMax, 300))
 
+    Component {
+        id: postGridComponent
+        PostGrid {}
+    }
+
     Item {
         anchors.fill: parent
         visible: !App.compact
@@ -43,11 +48,13 @@ Item {
             }
         }
 
-        PostGrid {
+        Loader {
             anchors.left: sidebarSlot.right
             anchors.right: parent.right
             anchors.top: parent.top
             anchors.bottom: parent.bottom
+            active: !App.compact
+            sourceComponent: postGridComponent
         }
     }
 
@@ -73,9 +80,11 @@ Item {
                 onRefreshClicked: App.reload()
             }
 
-            PostGrid {
+            Loader {
                 width: parent.width
                 height: parent.height - 52
+                active: App.compact
+                sourceComponent: postGridComponent
             }
         }
 

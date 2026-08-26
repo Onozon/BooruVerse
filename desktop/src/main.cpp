@@ -58,6 +58,9 @@ int main(int argc, char *argv[]) {
     engine.setNetworkAccessManagerFactory(new CacheNamFactory);
     engine.rootContext()->setContextProperty(QStringLiteral("App"), &controller);
     engine.rootContext()->setContextProperty(QStringLiteral("Theme"), &theme);
+    // ThumbEngine must live on the GUI thread; QQuickAsyncImageProvider may call
+    // requestImageResponse from QQuickPixmapReader's worker thread.
+    ThumbImageProvider::ensureEngine();
     engine.addImageProvider(QStringLiteral("thumbs"), new ThumbImageProvider);
     engine.addImageProvider(QStringLiteral("uiicons"), new IconImageProvider);
     QObject::connect(

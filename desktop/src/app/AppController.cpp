@@ -468,7 +468,7 @@ void AppController::viewerMove(int delta) {
     m_viewerUseOriginal = GallerySettings::instance().loadFullQuality();
     refreshViewer();
     emit viewerChanged();
-    if (m_viewerIndex >= m_currentPosts.size() - 8)
+    if (m_viewerIndex >= m_currentPosts.size() - 20)
         loadMore();
 }
 
@@ -1092,6 +1092,18 @@ double AppController::itemH(int index) const {
     if (index < 0 || index >= m_layout.frames.size())
         return 0;
     return m_layout.frames[index].height();
+}
+
+QVariantList AppController::indexesInYRange(double top, double bottom) const {
+    QVariantList out;
+    if (bottom < top)
+        std::swap(top, bottom);
+    for (int i = 0; i < m_layout.frames.size(); ++i) {
+        const QRectF &frame = m_layout.frames[i];
+        if (frame.bottom() >= top && frame.top() <= bottom)
+            out.append(i);
+    }
+    return out;
 }
 
 void AppController::toggleSelectedAt(int index) {

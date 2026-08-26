@@ -44,6 +44,14 @@ Item {
 
     onRemoteUrlChanged: if (!paused) schedule()
     onMaxPxChanged: if (!paused) schedule()
+    onPausedChanged: {
+        if (paused) {
+            startTimer.stop()
+            image.source = ""
+        } else {
+            schedule()
+        }
+    }
     Component.onCompleted: if (!paused) schedule()
 
     Timer {

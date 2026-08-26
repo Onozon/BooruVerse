@@ -105,7 +105,7 @@ Rectangle {
                 source: App.viewerUrl
                 fillMode: Image.PreserveAspectFit
                 asynchronous: true
-                cache: true
+                cache: false
                 mipmap: true
                 smooth: true
             }
