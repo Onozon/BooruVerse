@@ -31,4 +31,9 @@ struct TagQuery: Equatable, Sendable {
     mutating func clear() {
         tags.removeAll()
     }
+
+    func contains(_ tag: String) -> Bool {
+        let normalized = tag.trimmingCharacters(in: .whitespacesAndNewlines)
+        return tags.contains(normalized)
+    }
 }

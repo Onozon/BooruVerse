@@ -12,11 +12,16 @@ struct SavedTagSetsSheet: View {
         NavigationStack {
             Group {
                 if store.sets.isEmpty {
-                    ContentUnavailableView(
-                        "No Saved Sets",
-                        systemImage: "tray",
-                        description: Text("Save the current tags with the button next to Search.")
-                    )
+                    ContentUnavailableView {
+                        Label {
+                            Text("No Saved Sets")
+                        } icon: {
+                            Image(AppIcon.empty)
+                                .appGlyph(size: 64)
+                        }
+                    } description: {
+                        Text("Save the current tags with the button next to Search.")
+                    }
                 } else {
                     ScrollView {
                         LazyVStack(alignment: .leading, spacing: 0) {

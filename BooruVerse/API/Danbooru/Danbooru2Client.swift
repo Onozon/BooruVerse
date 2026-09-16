@@ -52,6 +52,8 @@ nonisolated private struct Danbooru2PostDTO: Decodable {
     let source: String?
     let mediaAsset: Danbooru2MediaAsset?
     let createdAt: FlexibleAPIDate?
+    let parentId: Int?
+    let hasChildren: Bool?
 
     func toModel(serverID: String) -> BooruPost {
         // Prefer the flat fields, fall back to media_asset variants when they're null
@@ -74,7 +76,9 @@ nonisolated private struct Danbooru2PostDTO: Decodable {
             fileURL: file,
             fileExt: fileExt ?? "",
             sourceURL: source.flatMap(URL.init(string:)),
-            createdAt: createdAt?.date
+            createdAt: createdAt?.date,
+            parentID: parentId.flatMap { $0 > 0 ? $0 : nil },
+            hasChildren: hasChildren ?? false
         )
     }
 

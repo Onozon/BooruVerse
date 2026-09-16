@@ -43,9 +43,9 @@ actor RemoteImageLoader {
     private static let session: URLSession = {
         let config = URLSessionConfiguration.default
         config.timeoutIntervalForRequest = 15
-        config.timeoutIntervalForResource = 60
+        config.timeoutIntervalForResource = 45
         config.httpMaximumConnectionsPerHost = 6
-        config.waitsForConnectivity = true
+        config.waitsForConnectivity = false
         return URLSession(configuration: config)
     }()
 

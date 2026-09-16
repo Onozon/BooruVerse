@@ -9,6 +9,8 @@ final class GalleryCoordinator {
     private(set) var selectedPostID: String?
     /// Survives `dismiss()` so the grid can scroll to the last viewed post.
     private(set) var returnPostID: String?
+    /// When false (random / peek family), pager posts are not replaced by the browse list.
+    private(set) var followsBrowseList = true
 
     var isPresented: Bool {
         model != nil && selectedPostID != nil
@@ -16,10 +18,21 @@ final class GalleryCoordinator {
 
     func open(model: BrowseViewModel, postID: String) {
         guard model.posts.contains(where: { $0.globalID == postID }) else { return }
+        open(model: model, posts: model.posts, selectedPostID: postID, followsBrowseList: true)
+    }
+
+    func open(
+        model: BrowseViewModel,
+        posts: [BooruPost],
+        selectedPostID: String,
+        followsBrowseList: Bool = false
+    ) {
+        guard posts.contains(where: { $0.globalID == selectedPostID }) else { return }
         self.model = model
-        posts = model.posts
-        selectedPostID = postID
-        returnPostID = postID
+        self.posts = posts
+        self.selectedPostID = selectedPostID
+        self.followsBrowseList = followsBrowseList
+        returnPostID = selectedPostID
     }
 
     func dismiss() {
@@ -27,6 +40,7 @@ final class GalleryCoordinator {
         model = nil
         selectedPostID = nil
         posts = []
+        followsBrowseList = true
     }
 
     func setSelectedPostID(_ postID: String) {
@@ -35,9 +49,25 @@ final class GalleryCoordinator {
         returnPostID = postID
     }
 
+    /// Jump to a related version, inserting it next to the current page when it is not in the pager.
+    func selectRelated(_ post: BooruPost) {
+        if !posts.contains(where: { $0.globalID == post.globalID }) {
+            if let index = posts.firstIndex(where: { $0.globalID == selectedPostID }) {
+                posts.insert(post, at: min(index + 1, posts.count))
+            } else {
+                posts.append(post)
+            }
+        }
+        selectedPostID = post.globalID
+        returnPostID = post.globalID
+    }
+
     func syncFromModel() {
-        guard let model else { return }
-        posts = model.posts
+        guard followsBrowseList, let model else { return }
+        let extras = posts.filter { extra in
+            !model.posts.contains(where: { $0.globalID == extra.globalID })
+        }
+        posts = model.posts + extras
         if let selectedPostID, !posts.contains(where: { $0.globalID == selectedPostID }) {
             dismiss()
         }

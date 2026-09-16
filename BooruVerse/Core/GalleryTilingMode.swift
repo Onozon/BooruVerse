@@ -8,6 +8,13 @@ enum GalleryTilingMode: String, CaseIterable, Codable, Sendable, Identifiable {
 
     var id: String { rawValue }
 
+    var icon: String {
+        switch self {
+        case .columns: "expand-height-line"
+        case .adaptive: "expand-width-line"
+        }
+    }
+
     var title: String {
         switch self {
         case .columns: "Columns"

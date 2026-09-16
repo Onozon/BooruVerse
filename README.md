@@ -8,7 +8,7 @@
 
 BooruVerse talks to Moebooru, Danbooru 2.x, and Gelbooru APIs. Flip on the hosts you care about, search with tags, and flip through posts without hopping between sites.
 
-Built with SwiftUI for iPhone, iPad, and Mac.
+Built with SwiftUI for iPhone, iPad, and Mac. A Qt desktop client lives in [`desktop/`](desktop/).
 
 ## Download
 

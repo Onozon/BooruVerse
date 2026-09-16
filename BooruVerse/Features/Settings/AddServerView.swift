@@ -70,7 +70,7 @@ struct AddServerView: View {
     private var footerView: some View {
         VStack(alignment: .leading, spacing: 6) {
             if let errorMessage {
-                Label(errorMessage, systemImage: "exclamationmark.triangle")
+                Label(errorMessage, appIcon: AppIcon.error)
                     .foregroundStyle(.red)
             } else if alreadyExists {
                 Text("This server is already in your list.")

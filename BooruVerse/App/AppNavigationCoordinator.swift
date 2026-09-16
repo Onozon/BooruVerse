@@ -19,13 +19,23 @@ enum AppTab: Hashable, CaseIterable, Identifiable {
         }
     }
 
-    var systemImage: String {
+    var icon: String {
         switch self {
-        case .feed: "flame"
-        case .browse: "magnifyingglass"
-        case .pools: "books.vertical"
-        case .favorites: "heart"
-        case .settings: "gearshape"
+        case .feed: AppIcon.feed
+        case .browse: AppIcon.browse
+        case .pools: AppIcon.pools
+        case .favorites: AppIcon.favorites
+        case .settings: AppIcon.settings
+        }
+    }
+
+    /// Tabs that make sense for the currently enabled servers (e.g. hide Pools without Moebooru).
+    static func visibleTabs(flavors: Set<BooruAPIFlavor>) -> [AppTab] {
+        allCases.filter { tab in
+            if tab == .pools {
+                return flavors.contains(where: \.supportsPools)
+            }
+            return true
         }
     }
 }

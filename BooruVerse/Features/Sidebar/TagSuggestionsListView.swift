@@ -11,11 +11,16 @@ struct TagSuggestionsListView: View {
                 ProgressView()
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if suggestions.isEmpty {
-                ContentUnavailableView(
-                    "No Tags",
-                    systemImage: "tag",
-                    description: Text("Try a different spelling.")
-                )
+                ContentUnavailableView {
+                    Label {
+                        Text("No Tags")
+                    } icon: {
+                        Image(AppIcon.empty)
+                            .appGlyph(size: 64)
+                    }
+                } description: {
+                    Text("Try a different spelling.")
+                }
             } else {
                 List(suggestions) { tag in
                     Button {

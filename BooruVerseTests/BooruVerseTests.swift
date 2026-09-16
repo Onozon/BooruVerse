@@ -131,7 +131,9 @@ final class BooruVerseTests: XCTestCase {
             fileURL: nil,
             fileExt: "jpg",
             sourceURL: nil,
-            createdAt: createdAt
+            createdAt: createdAt,
+            parentID: nil,
+            hasChildren: false
         )
     }
 }

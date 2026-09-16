@@ -11,11 +11,16 @@ struct PersonalFeedSetsView: View {
 
         Group {
             if savedStore.sets.isEmpty {
-                ContentUnavailableView(
-                    "No Saved Tag Sets",
-                    systemImage: "bookmark",
-                    description: Text("Save a tag set from Browse, then enable it here for your Personal feed.")
-                )
+                ContentUnavailableView {
+                    Label {
+                        Text("No Saved Tag Sets")
+                    } icon: {
+                        Image(AppIcon.empty)
+                            .appGlyph(size: 64)
+                    }
+                } description: {
+                    Text("Save a tag set from Browse, then enable it here for your Personal feed.")
+                }
             } else {
                 Form {
                     Section {

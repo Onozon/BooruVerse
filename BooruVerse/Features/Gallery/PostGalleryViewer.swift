@@ -1,33 +1,36 @@
 import SwiftUI
-import UniformTypeIdentifiers
 
 struct PostGalleryViewer: View {
     @Bindable var model: BrowseViewModel
     let posts: [BooruPost]
     @Binding var selectedPostID: String
-    let onAddTag: (String) async -> Void
+    /// Browse tag set for toggle + selected chip styling.
+    @Bindable var browseModel: BrowseViewModel
+    let onToggleTag: (String) async -> Void
     let onPostsUpdated: () -> Void
     let onDismiss: () -> Void
 
     @Environment(AppSettingsStore.self) private var settings
+    @Environment(GalleryCoordinator.self) private var gallery
+    @Environment(PostFamilyStore.self) private var families
 
     private var selectedIndex: Int {
         posts.firstIndex(where: { $0.globalID == selectedPostID }) ?? 0
+    }
+
+    private var selectedBrowseTags: Set<String> {
+        Set(browseModel.tagQuery.tags)
     }
 
     @State private var pageIndex = 0
     @State private var isZoomed = false
     @State private var showChrome = false
     @State private var dismissBackgroundOpacity: CGFloat = 1
-    @State private var exportDocument: SavedImageDocument?
-    @State private var showFileExporter = false
-    @State private var exportFilename = "image.jpg"
-    @State private var exportContentType: UTType = .jpeg
-    @State private var actionError: String?
     @State private var fullImageProgress: Double?
     @State private var upgradedPostID: String?
     @State private var upgradedImage: PlatformImage?
     @State private var fullImageLoadTask: Task<Void, Never>?
+    @State private var videoMuted = true
 #if os(macOS)
     @FocusState private var galleryFocused: Bool
 #endif
@@ -40,6 +43,11 @@ struct PostGalleryViewer: View {
     private var tagGroups: [BooruTagGroup] {
         guard let currentPost else { return [] }
         return model.postTagGroups(for: currentPost)
+    }
+
+    private var currentFamily: [BooruPost] {
+        guard let currentPost else { return [] }
+        return families.cachedFamily(for: currentPost)
     }
 
     var body: some View {
@@ -64,9 +72,13 @@ struct PostGalleryViewer: View {
             }
             pageIndex = selectedIndex
             dismissBackgroundOpacity = 1
-            RemoteImageLoaderBridge.prefetch(currentPost.viewerURL)
+            videoMuted = true
+            if !currentPost.isVideo {
+                RemoteImageLoaderBridge.prefetch(currentPost.viewerURL)
+            }
             model.resolvePostTags(for: currentPost)
             requestFullQualityIfNeeded(for: currentPost)
+            Task { await families.loadIfNeeded(post: currentPost) }
 #if os(macOS)
             galleryFocused = true
 #endif
@@ -97,24 +109,6 @@ struct PostGalleryViewer: View {
         .focused($galleryFocused)
         .focusEffectDisabled()
 #endif
-        .fileExporter(
-            isPresented: $showFileExporter,
-            document: exportDocument,
-            contentType: exportContentType,
-            defaultFilename: exportFilename
-        ) { result in
-            if case .failure(let error) = result {
-                actionError = error.localizedDescription
-            }
-        }
-        .alert("Error", isPresented: Binding(
-            get: { actionError != nil },
-            set: { if !$0 { actionError = nil } }
-        )) {
-            Button("OK", role: .cancel) {}
-        } message: {
-            Text(actionError ?? "")
-        }
 #if os(macOS)
         .onMoveCommand { direction in
             switch direction {
@@ -142,9 +136,38 @@ struct PostGalleryViewer: View {
                     .transition(.opacity)
             }
         }
+        .overlay(alignment: .bottomTrailing) {
+            if let currentPost, currentPost.isVideo {
+                VideoMuteButton(isMuted: $videoMuted)
+                    .padding(.trailing, 16)
+                    .padding(.bottom, showChrome ? 200 : 24)
+            }
+        }
+        .overlay(alignment: .top) {
+            if showChrome, currentFamily.count > 1, let currentPost {
+                PostFamilyStrip(
+                    posts: currentFamily,
+                    selectedID: currentPost.globalID,
+                    usesLightContent: true,
+                    onSelect: { gallery.selectRelated($0) }
+                )
+                .background(.black.opacity(0.45))
+                .padding(.top, 48)
+                .transition(.move(edge: .top).combined(with: .opacity))
+            }
+        }
         .overlay(alignment: .topTrailing) {
             if showChrome {
                 GalleryCloseButton(onClose: onDismiss)
+            }
+        }
+            .overlay(alignment: .topLeading) {
+            if SelectionStore.shared.showsCheckboxes, let currentPost {
+                SelectionCheckboxButton(isOn: SelectionStore.shared.contains(currentPost)) {
+                    SelectionStore.shared.toggle(currentPost)
+                }
+                .padding(.horizontal, 16)
+                .safeAreaPadding(.top, 8)
             }
         }
         .overlay(alignment: .bottom) {
@@ -153,14 +176,12 @@ struct PostGalleryViewer: View {
                     model: model,
                     post: currentPost,
                     tagGroups: tagGroups,
-                    onAddTag: { tag in
-                        onDismiss()
+                    selectedTags: selectedBrowseTags,
+                    onToggleTag: { tag in
                         Task {
-                            await onAddTag(tag)
+                            await onToggleTag(tag)
                         }
-                    },
-                    onExport: { Task { await prepareExport(for: currentPost) } },
-                    onSaveError: { actionError = $0 }
+                    }
                 )
                 .transition(.move(edge: .bottom).combined(with: .opacity))
                 .onAppear {
@@ -186,6 +207,8 @@ struct PostGalleryViewer: View {
                 post: post,
                 imageOverride: upgradedPostID == post.globalID ? upgradedImage : nil,
                 loadPriority: post.globalID == selectedPostID ? .high : .background,
+                isActive: post.globalID == selectedPostID,
+                isMuted: $videoMuted,
                 onImageLoaded: {
                     guard post.globalID == selectedPostID else { return }
                     prefetchAdjacentImages(around: selectedIndex)
@@ -195,7 +218,7 @@ struct PostGalleryViewer: View {
         .zoomable(min: 1, max: 5)
         .settings { config in
             config.contentAspectRatio = { post in
-                guard post.width > 0, post.height > 0 else { return nil }
+                guard post.width > 0, post.height > 0 else { return 16 / 9 }
                 return CGFloat(post.width) / CGFloat(post.height)
             }
         }
@@ -206,7 +229,7 @@ struct PostGalleryViewer: View {
             toggleChrome()
         }
         .onDoubleTap {
-            if let currentPost {
+            if let currentPost, !currentPost.isVideo, !currentPost.prefersAnimatedOriginal {
                 requestFullImage(for: currentPost)
             }
         }
@@ -235,6 +258,7 @@ struct PostGalleryViewer: View {
             posts: posts,
             isZoomed: isZoomed,
             autoLoadFullQuality: settings.loadFullQualityInViewer,
+            isMuted: videoMuted,
             onVerticalDismiss: {
                 guard !isZoomed else { return }
                 onDismiss()
@@ -289,17 +313,6 @@ struct PostGalleryViewer: View {
         }
     }
 
-    private func prepareExport(for currentPost: BooruPost) async {
-        do {
-            exportDocument = try await model.exportDocument(for: currentPost)
-            exportFilename = PostImageSaver.defaultFilename(for: currentPost)
-            exportContentType = PostImageSaver.contentType(for: currentPost)
-            showFileExporter = true
-        } catch {
-            actionError = error.localizedDescription
-        }
-    }
-
     private func fittedImageSize(for currentPost: BooruPost, in size: CGSize) -> CGSize {
         guard currentPost.width > 0, currentPost.height > 0 else {
             return size
@@ -319,6 +332,7 @@ struct PostGalleryViewer: View {
 
     private func handlePageChange(to newPostID: String) {
         isZoomed = false
+        videoMuted = true
         resetFullImageUpgradeState()
 
         guard let post = posts.first(where: { $0.globalID == newPostID }) else {
@@ -328,6 +342,7 @@ struct PostGalleryViewer: View {
 
         model.resolvePostTags(for: post)
         requestFullQualityIfNeeded(for: post)
+        Task { await families.loadIfNeeded(post: post) }
 
         Task {
             await model.loadMorePostsIfNeeded(nearPostID: post.globalID)
@@ -345,8 +360,10 @@ struct PostGalleryViewer: View {
 
     private func prefetchAdjacentImages(around index: Int) {
         for neighborIndex in [index - 1, index + 1] where posts.indices.contains(neighborIndex) {
+            let neighbor = posts[neighborIndex]
+            guard !neighbor.isVideo else { continue }
             RemoteImageLoaderBridge.prefetch(
-                posts[neighborIndex].viewerURL,
+                neighbor.viewerURL,
                 priority: .visible
             )
         }
@@ -360,6 +377,7 @@ struct PostGalleryViewer: View {
     }
 
     private func requestFullImage(for post: BooruPost) {
+        guard !post.isVideo, !post.prefersAnimatedOriginal else { return }
         guard post.hasHigherQualityOriginal else { return }
         guard upgradedPostID != post.globalID else { return }
         guard fullImageProgress == nil else { return }
@@ -394,7 +412,6 @@ struct PostGalleryViewer: View {
                     withAnimation(.easeInOut(duration: 0.2)) {
                         fullImageProgress = nil
                     }
-                    actionError = PostImageSaverError.missingImage.localizedDescription
                 }
             }
         }

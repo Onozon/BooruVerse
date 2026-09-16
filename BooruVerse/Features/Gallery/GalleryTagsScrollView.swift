@@ -5,7 +5,8 @@ import UIKit
 
 struct GalleryTagsScrollView: UIViewRepresentable {
     let groups: [BooruTagGroup]
-    let onAddTag: (String) -> Void
+    var selectedTags: Set<String> = []
+    let onToggleTag: (String) -> Void
     let collapsedHeight: CGFloat
     let maxExpansion: CGFloat
     var resetToken: Int
@@ -46,7 +47,8 @@ struct GalleryTagsScrollView: UIViewRepresentable {
 
         context.coordinator.syncContent(
             groups: groups,
-            onAddTag: onAddTag,
+            selectedTags: selectedTags,
+            onToggleTag: onToggleTag,
             in: scrollView
         )
     }
@@ -107,7 +109,8 @@ struct GalleryTagsScrollView: UIViewRepresentable {
 
         func syncContent(
             groups: [BooruTagGroup],
-            onAddTag: @escaping (String) -> Void,
+            selectedTags: Set<String>,
+            onToggleTag: @escaping (String) -> Void,
             in scrollView: UIScrollView
         ) {
             guard let host = hostingController else { return }
@@ -116,12 +119,17 @@ struct GalleryTagsScrollView: UIViewRepresentable {
             guard width > 0 else {
                 DispatchQueue.main.async { [weak self, weak scrollView] in
                     guard let self, let scrollView else { return }
-                    self.syncContent(groups: groups, onAddTag: onAddTag, in: scrollView)
+                    self.syncContent(
+                        groups: groups,
+                        selectedTags: selectedTags,
+                        onToggleTag: onToggleTag,
+                        in: scrollView
+                    )
                 }
                 return
             }
 
-            let signature = Self.contentSignature(for: groups, width: width)
+            let signature = Self.contentSignature(for: groups, selectedTags: selectedTags, width: width)
             let needsContentRebuild = signature != contentSignature || contentHeight <= 0
 
             if needsContentRebuild {
@@ -129,7 +137,11 @@ struct GalleryTagsScrollView: UIViewRepresentable {
                 lastLayoutWidth = width
 
                 host.rootView = AnyView(
-                    PostTagsListContent(groups: groups, onAddTag: onAddTag)
+                    PostTagsListContent(
+                        groups: groups,
+                        selectedTags: selectedTags,
+                        onToggleTag: onToggleTag
+                    )
                         .frame(width: width, alignment: .leading)
                         .fixedSize(horizontal: false, vertical: true)
                 )
@@ -158,9 +170,14 @@ struct GalleryTagsScrollView: UIViewRepresentable {
             }
         }
 
-        private static func contentSignature(for groups: [BooruTagGroup], width: CGFloat) -> String {
+        private static func contentSignature(
+            for groups: [BooruTagGroup],
+            selectedTags: Set<String>,
+            width: CGFloat
+        ) -> String {
             let tags = groups.flatMap(\.tags).map(\.name).joined(separator: "|")
-            return "\(Int(width.rounded()))::\(tags)"
+            let selected = selectedTags.sorted().joined(separator: ",")
+            return "\(Int(width.rounded()))::\(tags)::\(selected)"
         }
 
         private func updateBounceBehavior(in scrollView: UIScrollView) {
@@ -291,7 +308,8 @@ struct GalleryTagsScrollView: UIViewRepresentable {
 #else
 struct GalleryTagsScrollView: View {
     let groups: [BooruTagGroup]
-    let onAddTag: (String) -> Void
+    var selectedTags: Set<String> = []
+    let onToggleTag: (String) -> Void
     let collapsedHeight: CGFloat
     let maxExpansion: CGFloat
     var resetToken: Int
@@ -299,7 +317,11 @@ struct GalleryTagsScrollView: View {
 
     var body: some View {
         ScrollView {
-            PostTagsListContent(groups: groups, onAddTag: onAddTag)
+            PostTagsListContent(
+                groups: groups,
+                selectedTags: selectedTags,
+                onToggleTag: onToggleTag
+            )
         }
         .scrollIndicators(.hidden)
         .onChange(of: resetToken) { _, _ in

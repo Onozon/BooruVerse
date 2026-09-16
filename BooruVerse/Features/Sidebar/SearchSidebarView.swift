@@ -29,8 +29,11 @@ struct SearchSidebarView: View {
                     Button {
                         preferredCompactColumn = .detail
                     } label: {
-                        Label("Posts", systemImage: "photo.on.rectangle.angled")
+                        Label("Posts", appIcon: AppIcon.posts)
                     }
+                }
+                ToolbarItem(placement: .primaryAction) {
+                    RandomPostButton(model: model, usesChromeBubble: false)
                 }
             }
         }
@@ -179,8 +182,9 @@ struct SearchSidebarView: View {
         PageTagsSectionBody(
             chrome: model.tagChrome,
             isLoading: model.isLoading,
-            onAddTag: { name in
-                Task { await model.addTag(name) }
+            selectedTags: Set(model.tagQuery.tags),
+            onToggleTag: { name in
+                Task { await model.toggleTag(name) }
             }
         )
     }
@@ -195,8 +199,8 @@ struct SearchSidebarView: View {
             Button {
                 Task { await model.clearTags() }
             } label: {
-                Image(systemName: "xmark")
-                    .font(.title3.weight(.medium))
+                Image(AppIcon.close)
+                    .appGlyph(size: 18)
             }
             .buttonStyle(.plain)
             .disabled(model.tagQuery.isEmpty)
@@ -207,8 +211,8 @@ struct SearchSidebarView: View {
                 addSaveToPersonal = false
                 showSaveDialog = true
             } label: {
-                Image(systemName: "square.and.arrow.down")
-                    .font(.title3.weight(.medium))
+                Image(AppIcon.save)
+                    .appGlyph(size: 18)
             }
             .buttonStyle(.plain)
             .disabled(model.tagQuery.isEmpty)
@@ -217,8 +221,8 @@ struct SearchSidebarView: View {
             Button {
                 showSavedSetsSheet = true
             } label: {
-                Image(systemName: "list.bullet.rectangle")
-                    .font(.title3.weight(.medium))
+                Image(AppIcon.list)
+                    .appGlyph(size: 18)
             }
             .buttonStyle(.plain)
             .help("Saved tag sets")
@@ -319,7 +323,8 @@ private struct PageTagsSectionHeader: View {
 private struct PageTagsSectionBody: View {
     @Bindable var chrome: PageTagChrome
     let isLoading: Bool
-    let onAddTag: (String) -> Void
+    var selectedTags: Set<String> = []
+    let onToggleTag: (String) -> Void
 
     var body: some View {
         if chrome.pageTags.isEmpty {
@@ -331,9 +336,11 @@ private struct PageTagsSectionBody: View {
         } else {
             LazyVStack(alignment: .leading, spacing: 10) {
                 ForEach(chrome.pageTagGroups) { group in
-                    PageTagGroupSection(group: group) { tag in
-                        onAddTag(tag.name)
-                    }
+                    PageTagGroupSection(
+                        group: group,
+                        selectedTags: selectedTags,
+                        onToggleTag: onToggleTag
+                    )
                 }
             }
             .padding(.bottom, 12)
@@ -343,7 +350,8 @@ private struct PageTagsSectionBody: View {
 
 private struct PageTagGroupSection: View {
     let group: BooruTagGroup
-    let onAdd: (BooruTag) -> Void
+    var selectedTags: Set<String> = []
+    let onToggleTag: (String) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -355,13 +363,14 @@ private struct PageTagGroupSection: View {
             FlowLayout(spacing: 7) {
                 ForEach(group.tags) { tag in
                     Button {
-                        onAdd(tag)
+                        onToggleTag(tag.name)
                     } label: {
                         TagChip(
                             text: tag.name,
                             style: .page,
                             tint: tag.type.color,
-                            count: tag.postCount
+                            count: tag.postCount,
+                            isSelected: selectedTags.contains(tag.name)
                         )
                     }
                     .buttonStyle(.plain)

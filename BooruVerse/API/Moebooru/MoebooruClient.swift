@@ -14,6 +14,8 @@ nonisolated private struct MoebooruPostDTO: Decodable {
     let fileExt: String?
     let source: String?
     let createdAt: FlexibleAPIDate?
+    let parentId: Int?
+    let hasChildren: Bool?
 
     func toModel(serverID: String) -> BooruPost {
         BooruPost(
@@ -30,7 +32,9 @@ nonisolated private struct MoebooruPostDTO: Decodable {
             fileURL: fileUrl.flatMap(URL.init(string:)),
             fileExt: fileExt ?? "",
             sourceURL: source.flatMap(URL.init(string:)),
-            createdAt: createdAt?.date
+            createdAt: createdAt?.date,
+            parentID: parentId.flatMap { $0 > 0 ? $0 : nil },
+            hasChildren: hasChildren ?? false
         )
     }
 }

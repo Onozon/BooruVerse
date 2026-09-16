@@ -117,7 +117,7 @@ struct ZoomableImageView: View {
     }
 
     private var unavailableView: some View {
-        ContentUnavailableView("Image Unavailable", systemImage: "photo")
+        ContentUnavailableView("Image Unavailable", image: AppIcon.photo)
     }
 
 #if !canImport(UIKit)

@@ -1,5 +1,4 @@
 import SwiftUI
-import UniformTypeIdentifiers
 #if canImport(UIKit)
 import UIKit
 #endif
@@ -7,20 +6,31 @@ import UIKit
 struct PostPeekOverlay: View {
     @Bindable var model: BrowseViewModel
     let post: BooruPost
-    let onAddTag: (String) async -> Void
+    /// Browse tag set used for toggle + selected chip styling (may differ from `model` when peeking Feed/Favorites).
+    @Bindable var browseModel: BrowseViewModel
+    let onToggleTag: (String) async -> Void
     let onDismiss: () -> Void
 
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    @Environment(ServerStore.self) private var servers
+    @Environment(GalleryCoordinator.self) private var gallery
+    @Environment(PostFamilyStore.self) private var families
 
     @State private var appeared = false
-    @State private var exportDocument: SavedImageDocument?
-    @State private var showFileExporter = false
-    @State private var exportFilename = "image.jpg"
-    @State private var exportContentType: UTType = .jpeg
-    @State private var actionError: String?
+    @State private var peekMuted = true
 
     private var tagGroups: [BooruTagGroup] {
         model.postTagGroups(for: post)
+    }
+
+    private var selectedBrowseTags: Set<String> {
+        Set(browseModel.tagQuery.tags)
+    }
+
+    @Environment(SelectionStore.self) private var selection
+
+    private var serverDisplayName: String {
+        servers.server(host: post.serverID)?.displayName ?? post.serverID
     }
 
     var body: some View {
@@ -43,24 +53,7 @@ struct PostPeekOverlay: View {
             withAnimation(.spring(response: 0.38, dampingFraction: 0.82)) {
                 appeared = true
             }
-        }
-        .fileExporter(
-            isPresented: $showFileExporter,
-            document: exportDocument,
-            contentType: exportContentType,
-            defaultFilename: exportFilename
-        ) { result in
-            if case .failure(let error) = result {
-                actionError = error.localizedDescription
-            }
-        }
-        .alert("Error", isPresented: Binding(
-            get: { actionError != nil },
-            set: { if !$0 { actionError = nil } }
-        )) {
-            Button("OK", role: .cancel) {}
-        } message: {
-            Text(actionError ?? "")
+            Task { await families.loadIfNeeded(post: post) }
         }
     }
 
@@ -70,8 +63,9 @@ struct PostPeekOverlay: View {
         let cardHeight = min(size.height * 0.78, horizontalSizeClass == .compact ? 560 : 480)
         let headerHeight: CGFloat = 36
         let actionsHeight: CGFloat = 56
-        let imageHeight = (cardHeight - headerHeight - actionsHeight) * 0.52
-        let tagsHeight = cardHeight - imageHeight - headerHeight - actionsHeight
+        let familyExtra: CGFloat = families.cachedFamily(for: post).count > 1 ? 68 : 0
+        let imageHeight = (cardHeight - headerHeight - actionsHeight - familyExtra) * 0.52
+        let tagsHeight = cardHeight - imageHeight - headerHeight - actionsHeight - familyExtra
 
         Group {
             if horizontalSizeClass == .compact {
@@ -113,21 +107,28 @@ struct PostPeekOverlay: View {
             peekImage
                 .frame(width: cardWidth, height: imageHeight)
 
+            peekFamilyStrip
+
             tagsHeader
                 .frame(height: headerHeight)
 
-            PostTagsListView(groups: tagGroups, onAddTag: addTag)
+            PostTagsListView(
+                groups: tagGroups,
+                selectedTags: selectedBrowseTags,
+                onToggleTag: toggleTag
+            )
                 .frame(height: tagsHeight)
 
             Divider()
 
             PostImageActionBar(
                 model: model,
-                post: post,
-                onExport: { Task { await prepareExport() } },
-                onSaveError: { actionError = $0 }
+                post: post
             )
             .frame(height: actionsHeight)
+            .contextMenu {
+                PostImageContextMenu(model: model, post: post)
+            }
         }
         .frame(width: cardWidth, height: cardHeight)
     }
@@ -142,8 +143,11 @@ struct PostPeekOverlay: View {
     ) -> some View {
         VStack(spacing: 0) {
             HStack(spacing: 0) {
-                peekImage
-                    .frame(width: cardWidth * 0.48, height: cardHeight - actionsHeight)
+                VStack(spacing: 0) {
+                    peekImage
+                        .frame(width: cardWidth * 0.48, height: cardHeight - actionsHeight - peekFamilyHeight)
+                    peekFamilyStrip
+                }
 
                 Divider()
 
@@ -151,7 +155,11 @@ struct PostPeekOverlay: View {
                     tagsHeader
                         .frame(height: headerHeight)
 
-                    PostTagsListView(groups: tagGroups, onAddTag: addTag)
+                    PostTagsListView(
+                        groups: tagGroups,
+                        selectedTags: selectedBrowseTags,
+                        onToggleTag: toggleTag
+                    )
                 }
                 .frame(width: cardWidth * 0.52 - 1)
             }
@@ -160,35 +168,92 @@ struct PostPeekOverlay: View {
 
             PostImageActionBar(
                 model: model,
-                post: post,
-                onExport: { Task { await prepareExport() } },
-                onSaveError: { actionError = $0 }
+                post: post
             )
             .frame(height: actionsHeight)
+            .contextMenu {
+                PostImageContextMenu(model: model, post: post)
+            }
         }
         .frame(width: cardWidth, height: cardHeight)
     }
 
     private var peekImage: some View {
-        RemoteThumbnail(url: post.previewURL, contentMode: .fit)
-            .aspectRatio(post.aspectRatio, contentMode: .fit)
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .padding(8)
-            .background(Color.primary.opacity(0.04))
+        Group {
+            if post.isVideo, let url = post.playbackURL {
+                GalleryVideoPlayer(
+                    url: url,
+                    usesNativePlayer: post.usesNativeAVPlayer,
+                    isActive: true,
+                    isMuted: $peekMuted,
+                    showsMuteButton: true
+                )
+            } else if post.prefersAnimatedOriginal, let url = post.playbackURL {
+                AnimatedOrStillRemoteImage(url: url, previewURL: post.previewURL, isActive: true)
+            } else {
+                RemoteThumbnail(url: post.previewURL, contentMode: .fit)
+            }
+        }
+        .aspectRatio(post.aspectRatio, contentMode: .fit)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding(8)
+        .background(Color.primary.opacity(0.04))
+        .overlay(alignment: .topLeading) {
+            // Always available so touch users can start a selection without ⌘.
+            SelectionCheckboxButton(isOn: selection.contains(post)) {
+                selection.toggle(post)
+            }
+            .padding(4)
+        }
+        .contextMenu {
+            PostImageContextMenu(model: model, post: post)
+        }
+    }
+
+    private var peekFamily: [BooruPost] {
+        families.cachedFamily(for: post)
+    }
+
+    private var peekFamilyHeight: CGFloat {
+        peekFamily.count > 1 ? 68 : 0
+    }
+
+    @ViewBuilder
+    private var peekFamilyStrip: some View {
+        if peekFamily.count > 1 {
+            PostFamilyStrip(
+                posts: peekFamily,
+                selectedID: post.globalID,
+                onSelect: openRelated
+            )
+            .frame(height: peekFamilyHeight)
+        }
+    }
+
+    private func openRelated(_ related: BooruPost) {
+        if related.globalID == post.globalID { return }
+        let family = peekFamily
+        onDismiss()
+        gallery.open(
+            model: model,
+            posts: family,
+            selectedPostID: related.globalID,
+            followsBrowseList: false
+        )
     }
 
     private var tagsHeader: some View {
-        HStack {
+        HStack(alignment: .firstTextBaseline) {
             Text("Tags")
                 .font(.headline)
             Spacer()
-            Text("#\(post.id)")
+            Text("\(serverDisplayName)  #\(post.id)")
                 .font(.caption.monospacedDigit())
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.secondary.opacity(0.85))
+                .lineLimit(1)
             Button(action: dismiss) {
-                Image(systemName: "xmark.circle.fill")
-                    .font(.title3)
-                    .symbolRenderingMode(.hierarchical)
+                Image(AppIcon.close)
+                    .appGlyph(size: 20)
                     .foregroundStyle(.secondary)
             }
             .buttonStyle(.plain)
@@ -196,10 +261,9 @@ struct PostPeekOverlay: View {
         .padding(.horizontal, 12)
     }
 
-    private func addTag(_ tag: String) {
-        dismiss()
+    private func toggleTag(_ tag: String) {
         Task {
-            await onAddTag(tag)
+            await onToggleTag(tag)
         }
     }
 
@@ -209,17 +273,6 @@ struct PostPeekOverlay: View {
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.22) {
             onDismiss()
-        }
-    }
-
-    private func prepareExport() async {
-        do {
-            exportDocument = try await model.exportDocument(for: post)
-            exportFilename = PostImageSaver.defaultFilename(for: post)
-            exportContentType = PostImageSaver.contentType(for: post)
-            showFileExporter = true
-        } catch {
-            actionError = error.localizedDescription
         }
     }
 

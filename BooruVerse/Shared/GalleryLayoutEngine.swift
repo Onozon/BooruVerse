@@ -15,12 +15,15 @@ enum GalleryLayoutEngine {
         let index: Int
     }
 
-    static func columnCount(for containerWidth: CGFloat) -> Int {
+    static func columnCount(
+        for containerWidth: CGFloat,
+        preferredTileWidth: CGFloat = GalleryLayoutMetrics.minTileWidth,
+        maxColumns: Int = 10
+    ) -> Int {
         guard containerWidth > 0 else { return 1 }
-        return max(
-            1,
-            Int((containerWidth + GalleryLayoutMetrics.spacing) / (GalleryLayoutMetrics.minTileWidth + GalleryLayoutMetrics.spacing))
-        )
+        let tile = max(preferredTileWidth, 1)
+        let raw = Int((containerWidth + GalleryLayoutMetrics.spacing) / (tile + GalleryLayoutMetrics.spacing))
+        return min(max(1, raw), max(1, maxColumns))
     }
 
     static func columnWidth(for containerWidth: CGFloat, columnCount: Int) -> CGFloat {

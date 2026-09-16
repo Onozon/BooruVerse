@@ -24,6 +24,35 @@ nonisolated enum BooruAPIFlavor: String, Codable, Sendable, CaseIterable {
         case .gelbooru: "Gelbooru"
         }
     }
+
+    /// `GET` a single random post (Danbooru `random:N`, Moebooru `order:random`, Gelbooru `sort:random`).
+    var supportsRandomPosts: Bool { true }
+
+    /// Parent/child “other versions” of a post. Gelbooru exposes `parent_id` but no working `parent:` search.
+    var supportsPostFamily: Bool {
+        switch self {
+        case .moebooru, .danbooru2: true
+        case .gelbooru: false
+        }
+    }
+
+    /// Dedicated pool list API (`pool.json`). Gelbooru only has `pool:<id>` post search; Danbooru pools are not wired yet.
+    var supportsPools: Bool {
+        self == .moebooru
+    }
+
+    var supportsPopular: Bool {
+        self != .gelbooru
+    }
+
+    /// Search tokens that ask the site for a random post (combined with the rating filter).
+    var randomPostTag: String {
+        switch self {
+        case .danbooru2: "random:1"
+        case .moebooru: "order:random"
+        case .gelbooru: "sort:random"
+        }
+    }
 }
 
 /// Read-only browsing operations shared by all backends.

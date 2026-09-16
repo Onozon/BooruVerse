@@ -1,4 +1,9 @@
 import SwiftUI
+import UniformTypeIdentifiers
+
+#if canImport(AppKit)
+import AppKit
+#endif
 
 struct SettingsPlaceholderView: View {
     @Environment(AppSettingsStore.self) private var settings
@@ -7,6 +12,7 @@ struct SettingsPlaceholderView: View {
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
 
     @State private var showAddServer = false
+    @State private var pickingDownloadFolder = false
     @State private var path = NavigationPath()
 
     var body: some View {
@@ -33,6 +39,14 @@ struct SettingsPlaceholderView: View {
 #if os(macOS)
                         .frame(minWidth: 440, idealWidth: 480, minHeight: 220, idealHeight: 260)
 #endif
+                }
+                .fileImporter(
+                    isPresented: $pickingDownloadFolder,
+                    allowedContentTypes: [.folder],
+                    allowsMultipleSelection: false
+                ) { result in
+                    guard case .success(let urls) = result, let url = urls.first else { return }
+                    settings.setDownloadFolder(url)
                 }
                 .onAppear { consumePendingRoute() }
                 .onChange(of: navigation.pendingSettingsRoute) { _, _ in
@@ -61,13 +75,14 @@ struct SettingsPlaceholderView: View {
             personalFeedSection
             ratingSection
             gallerySection
+            downloadsSection
         }
     }
 
     private var personalFeedSection: some View {
         Section {
             NavigationLink(value: AppNavigationCoordinator.SettingsRoute.personalFeedSets) {
-                Label("Personal Feed", systemImage: "person.crop.rectangle.stack")
+                Label("Personal Feed", appIcon: AppIcon.personal)
             }
         } header: {
             Text("Feed")
@@ -85,7 +100,7 @@ struct SettingsPlaceholderView: View {
             Button {
                 showAddServer = true
             } label: {
-                Label("Add Server", systemImage: "plus.circle")
+                Label("Add Server", appIcon: AppIcon.add)
             }
         } header: {
             Text("Servers")
@@ -125,7 +140,8 @@ struct SettingsPlaceholderView: View {
                         }
                         Spacer(minLength: 8)
                         if settings.ratingFilter == filter {
-                            Image(systemName: "checkmark.circle.fill")
+                            Image(AppIcon.check)
+                                .appGlyph(size: 18)
                                 .foregroundStyle(.tint)
                         }
                     }
@@ -146,7 +162,7 @@ struct SettingsPlaceholderView: View {
 #if os(macOS)
             Picker("Gallery Layout", selection: tilingBinding) {
                 ForEach(GalleryTilingMode.allCases) { mode in
-                    Text(mode.title).tag(mode)
+                    Label(mode.title, appIcon: mode.icon).tag(mode)
                 }
             }
             .pickerStyle(.radioGroup)
@@ -162,6 +178,10 @@ struct SettingsPlaceholderView: View {
                     settings.galleryTilingMode = mode
                 } label: {
                     HStack(alignment: .top, spacing: 12) {
+                        Image(mode.icon)
+                            .appGlyph(size: 22)
+                            .foregroundStyle(.primary)
+                            .padding(.top, 2)
                         VStack(alignment: .leading, spacing: 4) {
                             Text(mode.title)
                                 .foregroundStyle(.primary)
@@ -172,7 +192,8 @@ struct SettingsPlaceholderView: View {
                         }
                         Spacer(minLength: 8)
                         if settings.galleryTilingMode == mode {
-                            Image(systemName: "checkmark.circle.fill")
+                            Image(AppIcon.check)
+                                .appGlyph(size: 18)
                                 .foregroundStyle(.tint)
                         }
                     }
@@ -187,6 +208,34 @@ struct SettingsPlaceholderView: View {
             Text("Gallery")
         } footer: {
             Text("Layout applies to Browse and Favorites. Full quality downloads the original file as soon as a post opens in the viewer (uses more data).")
+        }
+    }
+
+    private var downloadsSection: some View {
+        Section {
+            VStack(alignment: .leading, spacing: 8) {
+                Text(settings.downloadFolderPath.isEmpty ? "Not set (ask each time)" : settings.downloadFolderPath)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+
+                HStack {
+                    Button("Choose Folder…") {
+                        chooseDownloadFolder()
+                    }
+                    if !settings.downloadFolderPath.isEmpty {
+                        Button("Clear", role: .destructive) {
+                            settings.clearDownloadFolder()
+                        }
+                    }
+                }
+
+                Toggle("Ask Every Time", isOn: askDownloadFolderBinding)
+            }
+        } header: {
+            Text("Downloads")
+        } footer: {
+            Text("Selected posts and Save As write original files into this folder. Turn on Ask every time to pick a folder for each batch.")
         }
     }
 
@@ -209,6 +258,28 @@ struct SettingsPlaceholderView: View {
             get: { settings.loadFullQualityInViewer },
             set: { settings.loadFullQualityInViewer = $0 }
         )
+    }
+
+    private var askDownloadFolderBinding: Binding<Bool> {
+        Binding(
+            get: { settings.askDownloadFolder },
+            set: { settings.askDownloadFolder = $0 }
+        )
+    }
+
+    private func chooseDownloadFolder() {
+#if os(macOS)
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.prompt = "Select"
+        panel.message = "Choose the default download folder"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        settings.setDownloadFolder(url)
+#else
+        pickingDownloadFolder = true
+#endif
     }
 }
 
@@ -320,8 +391,8 @@ private struct ServerRow: View {
     @ViewBuilder
     private var keyIndicator: some View {
         if server.supportsCredentials, !server.hasCredentials {
-            Image(systemName: "key.fill")
-                .font(.caption)
+            Image(AppIcon.key)
+                .appGlyph(size: 14)
                 .foregroundStyle(server.requiresCredentials ? Color.red : Color.secondary)
         }
     }
@@ -436,8 +507,8 @@ private struct ColorSwatchGrid: View {
                     }
                     .overlay {
                         if isSelected {
-                            Image(systemName: "checkmark")
-                                .font(.system(size: 12, weight: .bold))
+                            Image(AppIcon.check)
+                                .appGlyph(size: 14)
                                 .foregroundStyle(.white)
                                 .shadow(radius: 1)
                         }

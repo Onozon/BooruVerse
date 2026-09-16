@@ -19,6 +19,7 @@ nonisolated private struct GelbooruPostDTO: Decodable {
     let createdAt: FlexibleAPIDate?
     /// Gelbooru / Safebooru often omit `created_at` and expose unix `change` instead.
     let change: FlexibleAPIDate?
+    let parentId: Int?
 
     func toModel(serverID: String) -> BooruPost {
         let ext = fileUrl.flatMap { URL(string: $0)?.pathExtension } ?? ""
@@ -36,7 +37,9 @@ nonisolated private struct GelbooruPostDTO: Decodable {
             fileURL: fileUrl.flatMap(URL.init(string:)),
             fileExt: ext,
             sourceURL: source.flatMap(URL.init(string:)),
-            createdAt: createdAt?.date ?? change?.date
+            createdAt: createdAt?.date ?? change?.date,
+            parentID: parentId.flatMap { $0 > 0 ? $0 : nil },
+            hasChildren: false
         )
     }
 

@@ -10,8 +10,16 @@ struct MacGalleryPage: View {
     @Environment(MacGallerySession.self) private var session
     @State private var platformImage: PlatformImage?
     @State private var localUpgradeImage: PlatformImage?
+    @State private var animated: AnimatedImageDecoder.Decoded?
     @State private var failed = false
     @State private var fullImageTask: Task<Void, Never>?
+
+    private var muteBinding: Binding<Bool> {
+        Binding(
+            get: { session.isMuted },
+            set: { session.isMuted = $0 }
+        )
+    }
 
     private var isActive: Bool {
         session.isActive(post.globalID)
@@ -28,31 +36,10 @@ struct MacGalleryPage: View {
     var body: some View {
         ZStack {
             Color.black
-            if let displayImage {
-                MacZoomableScrollImage(
-                    image: displayImage,
-                    isActive: isActive,
-                    onZoomChanged: { zoomed in
-                        guard isActive else { return }
-                        session.onZoomChanged?(zoomed)
-                    },
-                    onTap: {
-                        guard isActive, !session.isZoomed else { return }
-                        session.onToggleChrome?()
-                    },
-                    onRequestFullImage: { requestFullImage() },
-                    onVerticalDismissScroll: onVerticalDismissScroll
-                )
-            } else if failed {
-                ContentUnavailableView("Image Unavailable", systemImage: "photo")
-                    .foregroundStyle(.white)
-            } else {
-                ProgressView()
-                    .tint(.white)
-            }
+            mediaContent
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .task(id: post.viewerURL?.absoluteString ?? post.globalID) {
+        .task(id: post.playbackURL?.absoluteString ?? post.globalID) {
             await load()
         }
         .onChange(of: session.selectedPostID) { oldID, newID in
@@ -74,9 +61,64 @@ struct MacGalleryPage: View {
         }
     }
 
+    @ViewBuilder
+    private var mediaContent: some View {
+        if post.isVideo, let url = post.playbackURL {
+            GalleryVideoPlayer(
+                url: url,
+                usesNativePlayer: post.usesNativeAVPlayer,
+                isActive: isActive,
+                isMuted: muteBinding,
+                showsMuteButton: false
+            )
+            .aspectRatio(post.aspectRatio, contentMode: .fit)
+            .contentShape(Rectangle())
+            .onTapGesture {
+                guard isActive else { return }
+                session.onToggleChrome?()
+            }
+        } else if let animated, animated.isAnimated {
+            AnimatedFramesView(frames: animated.frames, durations: animated.durations, isActive: isActive)
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    guard isActive else { return }
+                    session.onToggleChrome?()
+                }
+        } else if let displayImage {
+            MacZoomableScrollImage(
+                image: displayImage,
+                isActive: isActive,
+                onZoomChanged: { zoomed in
+                    guard isActive else { return }
+                    session.onZoomChanged?(zoomed)
+                },
+                onTap: {
+                    guard isActive, !session.isZoomed else { return }
+                    session.onToggleChrome?()
+                },
+                onRequestFullImage: { requestFullImage() },
+                onVerticalDismissScroll: onVerticalDismissScroll
+            )
+        } else if failed {
+            ContentUnavailableView("Image Unavailable", image: AppIcon.photo)
+                .foregroundStyle(.white)
+        } else {
+            ProgressView()
+                .tint(.white)
+        }
+    }
+
     private func load() async {
         failed = false
         localUpgradeImage = nil
+        animated = nil
+        guard !post.isVideo else { return }
+
+        if post.prefersAnimatedOriginal, let url = post.playbackURL {
+            await loadPossiblyAnimated(url: url)
+            return
+        }
+
         guard let url = post.viewerURL else {
             platformImage = nil
             failed = true
@@ -120,8 +162,46 @@ struct MacGalleryPage: View {
         }
     }
 
+    private func loadPossiblyAnimated(url: URL) async {
+        if let preview = post.previewURL,
+           let cachedPreview = await RemoteImageLoaderBridge.cachedImage(
+            for: preview,
+            maxPixelSize: RemoteImageLoaderBridge.defaultThumbnailPixelSize
+           ) {
+            platformImage = cachedPreview
+            session.onImageLoaded?(post.globalID)
+        }
+
+        var request = URLRequest(url: url)
+        request.setValue("BooruVerse/1.0", forHTTPHeaderField: "User-Agent")
+        request.timeoutInterval = 45
+
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode), !data.isEmpty else {
+                failed = platformImage == nil
+                return
+            }
+            guard let decoded = AnimatedImageDecoder.decode(data) else {
+                failed = platformImage == nil
+                return
+            }
+            if decoded.isAnimated {
+                animated = decoded
+            } else if let still = decoded.still {
+                platformImage = still
+            } else {
+                failed = platformImage == nil
+                return
+            }
+            session.onImageLoaded?(post.globalID)
+        } catch {
+            failed = platformImage == nil
+        }
+    }
+
     private func requestFullImage() {
-        guard post.hasHigherQualityOriginal else { return }
+        guard !post.isVideo, !post.prefersAnimatedOriginal else { return }
         guard localUpgradeImage == nil else { return }
         guard let fileURL = post.fileURL else { return }
         guard fullImageTask == nil else { return }

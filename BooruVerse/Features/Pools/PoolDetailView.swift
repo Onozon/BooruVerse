@@ -21,6 +21,7 @@ struct PoolDetailView: View {
             model: model,
             preferredCompactColumn: .constant(.detail),
             tilingMode: settings.galleryTilingMode,
+            scaleSection: .pools,
             showsSidebarToggle: false,
             navigationTitle: pool.displayName
         )

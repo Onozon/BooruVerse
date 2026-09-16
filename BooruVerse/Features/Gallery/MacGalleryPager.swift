@@ -11,6 +11,7 @@ final class MacGallerySession {
     var selectedPostID: String
     var isZoomed = false
     var autoLoadFullQuality = false
+    var isMuted = true
     var onToggleChrome: (() -> Void)?
     var onZoomChanged: ((Bool) -> Void)?
     var onImageLoaded: ((String) -> Void)?
@@ -31,6 +32,7 @@ struct MacGalleryPager<Page: View>: NSViewControllerRepresentable {
     let posts: [BooruPost]
     var isZoomed: Bool = false
     var autoLoadFullQuality: Bool = false
+    var isMuted: Bool = true
     var onVerticalDismiss: (() -> Void)?
     var onKeyboardDismiss: (() -> Void)?
     var onKeyboardMove: ((Int) -> Void)?
@@ -69,7 +71,8 @@ struct MacGalleryPager<Page: View>: NSViewControllerRepresentable {
             onImageLoaded: onImageLoaded,
             onFullImageProgress: onFullImageProgress,
             isZoomed: isZoomed,
-            autoLoadFullQuality: autoLoadFullQuality
+            autoLoadFullQuality: autoLoadFullQuality,
+            isMuted: isMuted
         )
         context.coordinator.startKeyboardMonitor()
         DispatchQueue.main.async {
@@ -95,7 +98,8 @@ struct MacGalleryPager<Page: View>: NSViewControllerRepresentable {
             onImageLoaded: onImageLoaded,
             onFullImageProgress: onFullImageProgress,
             isZoomed: isZoomed,
-            autoLoadFullQuality: autoLoadFullQuality
+            autoLoadFullQuality: autoLoadFullQuality,
+            isMuted: isMuted
         )
         controller.isZoomed = isZoomed
         controller.onVerticalDismissScroll = { [weak coordinator = context.coordinator] event in
@@ -159,7 +163,8 @@ struct MacGalleryPager<Page: View>: NSViewControllerRepresentable {
             onImageLoaded: ((String) -> Void)?,
             onFullImageProgress: ((String, Double?) -> Void)?,
             isZoomed: Bool,
-            autoLoadFullQuality: Bool
+            autoLoadFullQuality: Bool,
+            isMuted: Bool
         ) {
             self.onVerticalDismiss = onVerticalDismiss
             self.onKeyboardDismiss = onKeyboardDismiss
@@ -167,6 +172,7 @@ struct MacGalleryPager<Page: View>: NSViewControllerRepresentable {
             self.isZoomed = isZoomed
             session.isZoomed = isZoomed
             session.autoLoadFullQuality = autoLoadFullQuality
+            session.isMuted = isMuted
             session.onToggleChrome = onToggleChrome
             session.onZoomChanged = onZoomChanged
             session.onImageLoaded = onImageLoaded

@@ -43,6 +43,11 @@ playground.xcworkspace
 *~
 .*.swp
 
+# --- Qt / desktop ---
+desktop/build/
+desktop/cmake-build-*/
+CMakeUserPresets.json
+
 # --- Python leftovers (local tooling only) ---
 .venv/
 venv/

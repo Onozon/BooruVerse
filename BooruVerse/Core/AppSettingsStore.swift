@@ -1,3 +1,4 @@
+import CoreGraphics
 import Foundation
 
 /// Which post ratings are shown across every feed.
@@ -66,10 +67,123 @@ final class AppSettingsStore {
         }
     }
 
+    /// Browse sidebar visibility (Mac custom split + iPad `NavigationSplitView`).
+    /// Default `true`. Missing key → true; explicit `false` persists across launches.
+    var showsBrowseSidebar: Bool {
+        didSet {
+            guard showsBrowseSidebar != oldValue else { return }
+            UserDefaults.standard.set(showsBrowseSidebar, forKey: Keys.showsBrowseSidebar)
+            revision += 1
+        }
+    }
+
+    /// Favorites folder sidebar visibility. Same persistence rules as Browse.
+    var showsFavoritesSidebar: Bool {
+        didSet {
+            guard showsFavoritesSidebar != oldValue else { return }
+            UserDefaults.standard.set(showsFavoritesSidebar, forKey: Keys.showsFavoritesSidebar)
+            revision += 1
+        }
+    }
+
+
+    private var tileExtents: [GalleryScaleSection: CGFloat]
+
+    /// Display path for Save As / batch file downloads. Empty → prompt each time (or askEveryTime).
+    private(set) var downloadFolderPath: String = ""
+
+    /// Security-scoped bookmark for the download folder (sandbox). Prefer this over the path string.
+    private var downloadFolderBookmark: Data?
+
+    /// When true, always prompt for a folder on file downloads even if a folder is set.
+    var askDownloadFolder: Bool {
+        didSet {
+            guard askDownloadFolder != oldValue else { return }
+            UserDefaults.standard.set(askDownloadFolder, forKey: Keys.askDownloadFolder)
+            revision += 1
+        }
+    }
+
+    /// Resolves the configured folder. Caller / `DownloadStore` must keep security scope for writes.
+    var resolvedDownloadFolderURL: URL? {
+        if let data = downloadFolderBookmark {
+            var isStale = false
+            #if os(macOS)
+            let options: URL.BookmarkResolutionOptions = [.withSecurityScope]
+            #else
+            let options: URL.BookmarkResolutionOptions = []
+            #endif
+            guard let url = try? URL(
+                resolvingBookmarkData: data,
+                options: options,
+                relativeTo: nil,
+                bookmarkDataIsStale: &isStale
+            ) else {
+                return nil
+            }
+            if isStale {
+                refreshDownloadFolderBookmark(from: url)
+            }
+            return url
+        }
+        let trimmed = downloadFolderPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        return URL(fileURLWithPath: trimmed, isDirectory: true)
+    }
+
+    /// Persist a user-picked folder with a security-scoped bookmark when possible.
+    func setDownloadFolder(_ url: URL) {
+        storeDownloadFolder(url, bumpRevision: true)
+    }
+
+    func clearDownloadFolder() {
+        downloadFolderBookmark = nil
+        downloadFolderPath = ""
+        UserDefaults.standard.removeObject(forKey: Keys.downloadFolderBookmark)
+        UserDefaults.standard.set("", forKey: Keys.downloadFolderPath)
+        revision += 1
+    }
+
+    private func refreshDownloadFolderBookmark(from url: URL) {
+        storeDownloadFolder(url, bumpRevision: false)
+    }
+
+    private func storeDownloadFolder(_ url: URL, bumpRevision: Bool) {
+        #if os(macOS)
+        let bookmarkOptions: URL.BookmarkCreationOptions = [.withSecurityScope]
+        #else
+        let bookmarkOptions: URL.BookmarkCreationOptions = []
+        #endif
+        let accessed = url.startAccessingSecurityScopedResource()
+        defer { if accessed { url.stopAccessingSecurityScopedResource() } }
+
+        if let data = try? url.bookmarkData(
+            options: bookmarkOptions,
+            includingResourceValuesForKeys: nil,
+            relativeTo: nil
+        ) {
+            downloadFolderBookmark = data
+            UserDefaults.standard.set(data, forKey: Keys.downloadFolderBookmark)
+        } else {
+            downloadFolderBookmark = nil
+            UserDefaults.standard.removeObject(forKey: Keys.downloadFolderBookmark)
+        }
+        downloadFolderPath = url.path
+        UserDefaults.standard.set(downloadFolderPath, forKey: Keys.downloadFolderPath)
+        if bumpRevision {
+            revision += 1
+        }
+    }
+
     private enum Keys {
         static let galleryTilingMode = "BooruVerse.galleryTilingMode"
         static let ratingFilter = "BooruVerse.ratingFilter"
         static let loadFullQualityInViewer = "BooruVerse.loadFullQualityInViewer"
+        static let showsBrowseSidebar = "BooruVerse.browse.showsSidebar"
+        static let showsFavoritesSidebar = "BooruVerse.favorites.showsSidebar"
+        static let downloadFolderPath = "BooruVerse.downloads.folderPath"
+        static let downloadFolderBookmark = "BooruVerse.downloads.folderBookmark"
+        static let askDownloadFolder = "BooruVerse.downloads.askEveryTime"
     }
 
     private init() {
@@ -92,5 +206,44 @@ final class AppSettingsStore {
         }
 
         loadFullQualityInViewer = UserDefaults.standard.bool(forKey: Keys.loadFullQualityInViewer)
+
+        if UserDefaults.standard.object(forKey: Keys.showsBrowseSidebar) == nil {
+            showsBrowseSidebar = true
+        } else {
+            showsBrowseSidebar = UserDefaults.standard.bool(forKey: Keys.showsBrowseSidebar)
+        }
+
+        if UserDefaults.standard.object(forKey: Keys.showsFavoritesSidebar) == nil {
+            showsFavoritesSidebar = true
+        } else {
+            showsFavoritesSidebar = UserDefaults.standard.bool(forKey: Keys.showsFavoritesSidebar)
+        }
+
+        downloadFolderPath = UserDefaults.standard.string(forKey: Keys.downloadFolderPath) ?? ""
+        downloadFolderBookmark = UserDefaults.standard.data(forKey: Keys.downloadFolderBookmark)
+        askDownloadFolder = UserDefaults.standard.bool(forKey: Keys.askDownloadFolder)
+
+        var extents: [GalleryScaleSection: CGFloat] = [:]
+        for section in GalleryScaleSection.allCases {
+            if UserDefaults.standard.object(forKey: section.defaultsKey) != nil {
+                let value = CGFloat(UserDefaults.standard.double(forKey: section.defaultsKey))
+                extents[section] = value > 0 ? value : GalleryThumbScale.defaultExtent
+            } else {
+                extents[section] = GalleryThumbScale.defaultExtent
+            }
+        }
+        tileExtents = extents
+    }
+
+    func tileExtent(for section: GalleryScaleSection) -> CGFloat {
+        tileExtents[section] ?? GalleryThumbScale.defaultExtent
+    }
+
+    func setTileExtent(_ value: CGFloat, for section: GalleryScaleSection) {
+        let clamped = max(72, value)
+        guard tileExtents[section] != clamped else { return }
+        tileExtents[section] = clamped
+        UserDefaults.standard.set(Double(clamped), forKey: section.defaultsKey)
+        revision += 1
     }
 }

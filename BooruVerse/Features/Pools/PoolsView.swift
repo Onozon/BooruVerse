@@ -46,7 +46,7 @@ struct PoolsView: View {
     private var content: some View {
         if let errorMessage = model.errorMessage, model.pools.isEmpty {
             ContentUnavailableView {
-                Label("Couldn't Load Pools", systemImage: "exclamationmark.triangle")
+                Label("Couldn't Load Pools", appIcon: AppIcon.error)
             } description: {
                 Text(errorMessage)
             } actions: {
@@ -58,11 +58,16 @@ struct PoolsView: View {
             ProgressView("Loading pools…")
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else if model.pools.isEmpty {
-            ContentUnavailableView(
-                "No Pools",
-                systemImage: "rectangle.stack",
-                description: Text("Try a different search.")
-            )
+            ContentUnavailableView {
+                Label {
+                    Text("No Pools")
+                } icon: {
+                    Image(AppIcon.empty)
+                        .appGlyph(size: 64)
+                }
+            } description: {
+                Text("Try a different search.")
+            }
         } else {
             // ScrollView + LazyVStack keeps NavigationLink rows stable on macOS.
             // List + GeometryReader thumbnails was collapsing into a bare preview grid
@@ -179,8 +184,8 @@ private struct PoolPreviewThumb: View {
                     .resizable()
                     .scaledToFill()
             } else if failed {
-                Image(systemName: "photo")
-                    .font(.caption)
+                Image(AppIcon.photo)
+                    .appGlyph(size: 16)
                     .foregroundStyle(.tertiary)
             }
         }

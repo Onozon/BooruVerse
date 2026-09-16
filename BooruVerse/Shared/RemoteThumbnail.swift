@@ -24,7 +24,8 @@ struct RemoteThumbnail: View {
                         .resizable()
                         .modifier(ThumbnailScaleMode(contentMode: contentMode))
                 } else if failed {
-                    Image(systemName: "photo")
+                    Image(AppIcon.photo)
+                        .appGlyph(size: 22)
                         .foregroundStyle(.tertiary)
                 }
             }
@@ -96,7 +97,8 @@ struct ProgressiveRemoteImage: View {
                         .resizable()
                         .modifier(ThumbnailScaleMode(contentMode: contentMode))
                 } else if failed {
-                    Image(systemName: "photo")
+                    Image(AppIcon.photo)
+                        .appGlyph(size: 22)
                         .foregroundStyle(.tertiary)
                 }
             }

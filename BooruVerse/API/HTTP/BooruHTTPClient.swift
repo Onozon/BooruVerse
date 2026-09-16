@@ -17,7 +17,9 @@ enum BooruHTTPError: LocalizedError {
 enum BooruHTTPClient {
     private static let session: URLSession = {
         let config = URLSessionConfiguration.default
-        config.timeoutIntervalForRequest = 30
+        config.timeoutIntervalForRequest = 20
+        config.timeoutIntervalForResource = 45
+        config.waitsForConnectivity = false
         config.httpShouldSetCookies = true
         return URLSession(configuration: config)
     }()

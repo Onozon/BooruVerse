@@ -4,9 +4,8 @@ struct GalleryBottomChrome: View {
     @Bindable var model: BrowseViewModel
     let post: BooruPost
     let tagGroups: [BooruTagGroup]
-    let onAddTag: (String) -> Void
-    let onExport: () -> Void
-    let onSaveError: (String) -> Void
+    var selectedTags: Set<String> = []
+    let onToggleTag: (String) -> Void
 
     @State private var panelExpansion: CGFloat = 0
     @State private var tagsResetToken = 0
@@ -32,7 +31,8 @@ struct GalleryBottomChrome: View {
         VStack(spacing: 0) {
             GalleryTagsScrollView(
                 groups: tagGroups,
-                onAddTag: onAddTag,
+                selectedTags: selectedTags,
+                onToggleTag: onToggleTag,
                 collapsedHeight: tagsCollapsedHeight,
                 maxExpansion: maxPanelExpansion,
                 resetToken: tagsResetToken,
@@ -45,11 +45,12 @@ struct GalleryBottomChrome: View {
             PostImageActionBar(
                 model: model,
                 post: post,
-                onExport: onExport,
-                onSaveError: onSaveError,
                 usesLightContent: true
             )
             .frame(height: actionBarHeight)
+            .contextMenu {
+                PostImageContextMenu(model: model, post: post)
+            }
         }
         .background(alignment: .bottom) {
             chromeBackdrop
@@ -88,8 +89,8 @@ struct GalleryCloseButton: View {
 
     var body: some View {
         Button(action: onClose) {
-            Image(systemName: "xmark")
-                .font(.body.weight(.semibold))
+            Image(AppIcon.close)
+                .appGlyph(size: 16)
                 .foregroundStyle(.white)
                 .frame(width: 36, height: 36)
                 .background(.black.opacity(0.45), in: Circle())

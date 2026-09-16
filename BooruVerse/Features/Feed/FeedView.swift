@@ -42,8 +42,10 @@ struct FeedView: View {
                         model: model,
                         preferredCompactColumn: .constant(.detail),
                         tilingMode: settings.galleryTilingMode,
+                        scaleSection: .feed,
                         showsSidebarToggle: false,
                         navigationTitle: model.feedChannel == .personal ? "Personal" : "Popular",
+                        isActive: isActive,
                         contributesToolbar: isActive,
                         restoredScrollPostID: session.scrollAnchor(for: model.feedChannel),
                         onVisiblePostChange: { postID in
@@ -91,7 +93,12 @@ struct FeedView: View {
 
     private var personalEmptyState: some View {
         ContentUnavailableView {
-            Label("Personal Feed", systemImage: "person.crop.rectangle.stack")
+            Label {
+                Text("Personal Feed")
+            } icon: {
+                Image(AppIcon.empty)
+                    .appGlyph(size: 64)
+            }
         } description: {
             Text("Choose saved tag sets to build a mixed feed. Overlapping posts appear once, newest first.")
         } actions: {

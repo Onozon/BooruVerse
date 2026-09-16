@@ -2,23 +2,33 @@ import SwiftUI
 
 struct PostTagsListView: View {
     let groups: [BooruTagGroup]
-    let onAddTag: (String) -> Void
+    var selectedTags: Set<String> = []
+    let onToggleTag: (String) -> Void
 
     var body: some View {
         ScrollView {
-            PostTagsListContent(groups: groups, onAddTag: onAddTag)
+            PostTagsListContent(
+                groups: groups,
+                selectedTags: selectedTags,
+                onToggleTag: onToggleTag
+            )
         }
     }
 }
 
 struct PostTagsListContent: View {
     let groups: [BooruTagGroup]
-    let onAddTag: (String) -> Void
+    var selectedTags: Set<String> = []
+    let onToggleTag: (String) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             ForEach(groups) { group in
-                PostTagGroupSection(group: group, onAddTag: onAddTag)
+                PostTagGroupSection(
+                    group: group,
+                    selectedTags: selectedTags,
+                    onToggleTag: onToggleTag
+                )
             }
         }
         .padding(.horizontal)
@@ -28,7 +38,8 @@ struct PostTagsListContent: View {
 
 struct PostTagGroupSection: View {
     let group: BooruTagGroup
-    let onAddTag: (String) -> Void
+    var selectedTags: Set<String> = []
+    let onToggleTag: (String) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -40,13 +51,14 @@ struct PostTagGroupSection: View {
             FlowLayout(spacing: 7) {
                 ForEach(group.tags) { tag in
                     Button {
-                        onAddTag(tag.name)
+                        onToggleTag(tag.name)
                     } label: {
                         TagChip(
                             text: tag.name,
                             style: .page,
                             tint: tag.type.color,
-                            count: nil
+                            count: nil,
+                            isSelected: selectedTags.contains(tag.name)
                         )
                     }
                     .buttonStyle(.plain)

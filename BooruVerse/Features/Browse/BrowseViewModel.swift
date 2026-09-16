@@ -49,11 +49,11 @@ final class BrowseViewModel {
     var isLoading = false
     var isSearchingSuggestions = false
     var errorMessage: String?
+    var isLoadingRandom = false
+    var randomLoadError: String?
 
     private var postsLoadGeneration = 0
     private(set) var listGeneration = 0
-
-    private(set) var favoritesRevision = 0
 
     // Compatibility shims for call sites that still read tag chrome via the VM.
     var pageTags: [BooruTag] {
@@ -110,11 +110,13 @@ final class BrowseViewModel {
         tagChrome.bumpTagIndexRevision()
     }
 
-    /// Loads data once per view-model lifetime. Safe to call from `.task` on tab switches.
+    /// Loads the first page if this model has never finished a load.
+    /// Safe to call from `.task` on tab switches: a cancelled first load does not stick
+    /// forever (iPad `TabView` tears down Browse while the request is in flight).
     func bootstrapIfNeeded() async {
         loadTagCache()
+        guard !isLoading else { return }
         guard !hasBootstrapped else { return }
-        hasBootstrapped = true
 
         switch mode {
         case .browse, .pool, .popular:
@@ -122,6 +124,48 @@ final class BrowseViewModel {
         case .favorites:
             await loadFavorites()
         }
+
+        if Task.isCancelled {
+            isLoading = false
+            isLoadingMore = false
+            return
+        }
+        hasBootstrapped = true
+    }
+
+    /// Picks a random enabled backend on-device, then asks that site for one random post.
+    func fetchRandomPost() async -> BooruPost? {
+        randomLoadError = nil
+        let candidates = servers.filter { $0.apiFlavor.supportsRandomPosts }.shuffled()
+        guard !candidates.isEmpty else {
+            randomLoadError = "No servers available."
+            return nil
+        }
+
+        isLoadingRandom = true
+        defer { isLoadingRandom = false }
+
+        let filter = AppSettingsStore.shared.ratingFilter
+        var lastError: String?
+        for server in candidates {
+            let tags = Self.query(server.apiFlavor.randomPostTag, withRating: filter, flavor: server.apiFlavor)
+            do {
+                let posts = try await server.fetchPosts(tags: tags, page: 1, limit: 1)
+                if let post = posts.first, filter.allows(post.rating) {
+                    return post
+                }
+                lastError = "Empty result from \(server.displayName)."
+            } catch {
+                lastError = error.localizedDescription
+            }
+        }
+
+        randomLoadError = lastError ?? "Couldn't load a random post."
+        return nil
+    }
+
+    func site(forHost host: String) -> (any BooruSite & BooruBrowsing)? {
+        servers.first { $0.siteID == host }
     }
 
     func postTagGroups(for post: BooruPost) -> [BooruTagGroup] {
@@ -177,16 +221,23 @@ final class BrowseViewModel {
     }
 
     func isFavorite(_ post: BooruPost) -> Bool {
-        _ = favoritesRevision
+        _ = FavoritePostStore.shared.revision
         return FavoritePostStore.shared.isFavorite(postID: post.id, siteID: post.serverID)
     }
 
     func toggleFavorite(_ post: BooruPost) {
-        FavoritePostStore.shared.toggle(postID: post.id, siteID: post.serverID)
-        favoritesRevision += 1
-        if mode == .favorites {
+        FavoritePostStore.shared.toggleOrRequestAdd(post)
+        // Folder picker path refreshes Favorites after confirm via store.revision observers.
+        if mode == .favorites, !FavoritePostStore.shared.isPresentingFolderPicker {
             Task { await refreshPosts() }
         }
+    }
+
+    func requestMoveFavorite(_ post: BooruPost) {
+        FavoritePostStore.shared.requestAdd(
+            posts: [FavoriteEntry(post: post, folderID: FavoritePostStore.shared.lastFolderID)],
+            allowMove: true
+        )
     }
 
     func pageNumber(forPostAt index: Int) -> Int {
@@ -333,6 +384,7 @@ final class BrowseViewModel {
             }
         }
         updatePageTagsForVisiblePage()
+        await fillFilteredPostsIfNeeded()
     }
 
     private func fetchBrowsePage(append: Bool) async {
@@ -358,7 +410,6 @@ final class BrowseViewModel {
             appendPosts(fetched, isInitial: isInitial)
             loadedThroughPage += 1
             hasMorePages = aggregator.hasMore
-            await fillFilteredPostsIfNeeded()
         } catch is CancellationError {
             return
         } catch let urlError as URLError where urlError.code == .cancelled {
@@ -390,7 +441,6 @@ final class BrowseViewModel {
             appendPosts(fetched, isInitial: isInitial)
             loadedThroughPage = pageToLoad
             hasMorePages = !fetched.isEmpty
-            await fillFilteredPostsIfNeeded()
         } catch is CancellationError {
             return
         } catch let urlError as URLError where urlError.code == .cancelled {
@@ -536,14 +586,16 @@ final class BrowseViewModel {
 
         fetched.sort { (order[$0.globalID] ?? 0) < (order[$1.globalID] ?? 0) }
         appendPosts(fetched, isInitial: isInitial)
+        FavoritePostStore.shared.backfillPreviews(from: fetched)
 
         loadedThroughPage = pageToLoad
         hasMorePages = start + Self.pageSize < favoritePairs.count
     }
 
     private func rebuildFavoritePairs() {
+        let folderID = FavoritePostStore.shared.activeFolderID
         let perServer = servers.map { server in
-            (server, FavoritePostStore.shared.favoriteIDs(for: server.siteID))
+            (server, FavoritePostStore.shared.favoriteIDs(for: server.siteID, folderID: folderID))
         }
         var pairs: [(server: any BooruSite & BooruBrowsing, id: Int)] = []
         var row = 0
@@ -657,6 +709,25 @@ final class BrowseViewModel {
         inputFragment = ""
         suggestions = []
         await loadPosts(resetPage: true)
+    }
+
+    /// Toggle a Browse search tag without leaving the current overlay/tab.
+    func toggleTag(_ tag: String) async {
+        guard mode == .browse else { return }
+        let normalized = tag.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalized.isEmpty else { return }
+        if tagQuery.contains(normalized) {
+            tagQuery.remove(normalized)
+        } else {
+            tagQuery.add(normalized)
+        }
+        inputFragment = ""
+        suggestions = []
+        await loadPosts(resetPage: true)
+    }
+
+    func hasTag(_ tag: String) -> Bool {
+        tagQuery.contains(tag)
     }
 
     func removeTag(_ tag: String) async {

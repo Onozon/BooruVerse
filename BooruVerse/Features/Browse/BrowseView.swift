@@ -12,37 +12,31 @@ struct BrowseView: View {
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @Environment(\.compactLayout) private var compactLayout
     @State private var preferredCompactColumn: NavigationSplitViewColumn = .detail
-    /// macOS wide: custom split (no NavigationSplitView — its system toggle leaks to other tabs).
-    @State private var showsMacSidebar = true
 
-    /// Phone-like single column. NavigationSplitView does not collapse on macOS the way
-    /// it does on iPadOS, so Mac narrow windows use an explicit one-screen switcher.
+    /// Phone / compact iPad: one screen at a time. Nested `NavigationSplitView` inside
+    /// `TabView` on iPad often lays out the post grid at zero width (blank cells / stuck spinner).
     private var useSingleColumn: Bool {
 #if os(macOS)
         compactLayout
 #else
-        false
+        horizontalSizeClass == .compact
 #endif
     }
 
     var body: some View {
         let _ = settings.ratingFilter
+        let _ = settings.showsBrowseSidebar
 
         Group {
             if useSingleColumn {
                 singleColumnBrowse
             } else {
-#if os(macOS)
-                macSplitBrowse
-#else
                 splitBrowse
-#endif
             }
         }
         .hideSystemSidebarToggle(true)
         .task {
-            await model.bootstrapIfNeeded()
-            applyPendingTagIfNeeded()
+            await reloadIfNeeded()
         }
         .onChange(of: settings.ratingFilter) { _, _ in
             Task { await model.applyRatingFilterChange() }
@@ -54,7 +48,7 @@ struct BrowseView: View {
         }
         .onChange(of: navigation.selectedTab) { _, tab in
             guard tab == .browse else { return }
-            applyPendingTagIfNeeded()
+            Task { await reloadIfNeeded() }
             if navigation.consumeBrowseDetailFocus() {
                 preferredCompactColumn = .detail
             }
@@ -70,6 +64,17 @@ struct BrowseView: View {
             if peek.isOpen(for: model) {
                 peek.dismiss()
             }
+        }
+        .alert(
+            "Random Post",
+            isPresented: Binding(
+                get: { model.randomLoadError != nil },
+                set: { if !$0 { model.randomLoadError = nil } }
+            )
+        ) {
+            Button("OK", role: .cancel) { model.randomLoadError = nil }
+        } message: {
+            Text(model.randomLoadError ?? "")
         }
     }
 
@@ -99,77 +104,60 @@ struct BrowseView: View {
         }
     }
 
-#if os(macOS)
-    /// Manual sidebar + detail. Avoids NavigationSplitView's window sidebar toggle.
-    private var macSplitBrowse: some View {
+    /// Manual sidebar + detail. Avoids `NavigationSplitView` inside `TabView` (iPad layout bugs)
+    /// and the system window sidebar toggle on Mac.
+    private var splitBrowse: some View {
         HStack(spacing: 0) {
-            if showsMacSidebar {
+            if settings.showsBrowseSidebar {
                 SearchSidebarView(
                     model: model,
                     preferredCompactColumn: $preferredCompactColumn
                 )
                 .frame(minWidth: 260, idealWidth: 300, maxWidth: 360)
+#if os(macOS)
                 .navigationTitle("")
+#endif
 
                 Divider()
             }
 
+#if os(macOS)
             NavigationStack {
                 resultsView
-                    .toolbar {
-                        if isActive {
-                            ToolbarItem(placement: .navigation) {
-                                Button {
-                                    withAnimation(.easeInOut(duration: 0.2)) {
-                                        showsMacSidebar.toggle()
-                                    }
-                                } label: {
-                                    Label(
-                                        "Toggle Sidebar",
-                                        systemImage: "sidebar.left"
-                                    )
-                                }
-                                .help("Toggle Sidebar")
-                            }
-                        }
-                    }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-        }
-    }
 #else
-    private var splitBrowse: some View {
-        NavigationSplitView(preferredCompactColumn: $preferredCompactColumn) {
-            NavigationStack {
-                SearchSidebarView(
-                    model: model,
-                    preferredCompactColumn: $preferredCompactColumn
-                )
-                .navigationTitle(model.displayName)
-                .navigationBarTitleDisplayMode(.inline)
-                .toolbarBackground(.background, for: .navigationBar)
-                .toolbarBackground(.visible, for: .navigationBar)
-            }
-        } detail: {
-            NavigationStack {
-                resultsView
-            }
-        }
-        .navigationSplitViewStyle(.balanced)
-    }
+            resultsView
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
 #endif
+        }
+        .animation(.easeInOut(duration: 0.2), value: settings.showsBrowseSidebar)
+    }
+
+    /// Regular Mac / iPad chrome lives on the window or tab bar row, not a second header.
+    private var resultsContributeToolbar: Bool {
+        useSingleColumn
+    }
 
     private var resultsView: some View {
         PostResultsView(
             model: model,
             preferredCompactColumn: $preferredCompactColumn,
             tilingMode: settings.galleryTilingMode,
-            contributesToolbar: isActive,
+            scaleSection: .browse,
+            showsRandomPostButton: true,
+            isActive: isActive,
+            contributesToolbar: isActive && resultsContributeToolbar,
             restoredScrollPostID: scrollAnchor?.wrappedValue,
             onVisiblePostChange: { postID in
                 scrollAnchor?.wrappedValue = postID
             }
         )
+    }
+
+    private func reloadIfNeeded() async {
+        await model.bootstrapIfNeeded()
+        applyPendingTagIfNeeded()
     }
 
     private func applyPendingTagIfNeeded() {
@@ -185,4 +173,5 @@ struct BrowseView: View {
         .environment(AppNavigationCoordinator())
         .environment(AppSettingsStore.shared)
         .environment(ServerStore.shared)
+        .environment(PostFamilyStore.shared)
 }
